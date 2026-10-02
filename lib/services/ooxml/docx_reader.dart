@@ -43,9 +43,14 @@ class DocxParagraph extends DocxBlock {
     this.isTitle = false,
     this.listLevel,
     this.align = ParagraphAlign.left,
+    this.ref,
   });
 
   final List<DocxRun> runs;
+
+  /// Position of the paragraph's `<w:p>` in the editor's paragraph list,
+  /// when the document was read for editing.
+  final int? ref;
 
   /// 0 for body text, 1-6 for headings.
   final int headingLevel;
@@ -59,9 +64,12 @@ class DocxParagraph extends DocxBlock {
 }
 
 class DocxTable extends DocxBlock {
-  const DocxTable(this.rows);
+  const DocxTable(this.rows, {this.ref});
 
   final List<List<String>> rows;
+
+  /// Position of the `<w:tbl>` in the editor's table list, when editing.
+  final int? ref;
 }
 
 class DocxImage extends DocxBlock {
@@ -115,22 +123,36 @@ class DocxReader {
     const mainPart = 'word/document.xml';
     final doc = pkg.xml(mainPart);
     if (doc == null) throw OoxmlFormatException('Not a Word document (word/document.xml missing).');
-    final body = doc.rootElement.kid('body');
-    if (body == null) return const DocxDocument([]);
+    return readParts(document: doc, styles: pkg.xml('word/styles.xml'), rels: pkg.relationships(mainPart), bytes: pkg.bytes);
+  }
 
-    final styleNames = <String, String>{};
-    final styles = pkg.xml('word/styles.xml');
-    if (styles != null) {
-      for (final s in styles.rootElement.kids('style')) {
-        final id = s.attr('styleId');
-        final name = s.kid('name')?.attr('val');
-        if (id != null && name != null) styleNames[id] = name.toLowerCase();
-      }
-    }
-    final rels = pkg.relationships(mainPart);
-    final reader = _BodyReader(pkg, rels, styleNames);
+  /// Reads already-parsed parts. With [paragraphs] and [tables], every
+  /// `<w:p>` and `<w:tbl>` that becomes a block is added to them and the
+  /// block's `ref` is its index, so an editor can find the XML again.
+  static DocxDocument readParts({
+    required XmlDocument document,
+    XmlDocument? styles,
+    Map<String, String> rels = const {},
+    required List<int>? Function(String path) bytes,
+    List<XmlElement>? paragraphs,
+    List<XmlElement>? tables,
+  }) {
+    final body = document.rootElement.kid('body');
+    if (body == null) return const DocxDocument([]);
+    final reader = _BodyReader(bytes, rels, styleNames(styles), paragraphs, tables);
     return DocxDocument(reader.readBlocks(body), page: _pageSetup(body.kid('sectPr')));
   }
+
+  /// Style id -> lower-case style name, e.g. `Heading1` -> `heading 1`.
+  static Map<String, String> styleNames(XmlDocument? styles) => {
+        for (final s in styles?.rootElement.kids('style') ?? const <XmlElement>[])
+          if (s.attr('styleId') != null && s.kid('name')?.attr('val') != null) s.attr('styleId')!: s.kid('name')!.attr('val')!.toLowerCase(),
+      };
+
+  /// Reads one paragraph the way [read] does, for refreshing a single
+  /// paragraph after it was edited.
+  static DocxParagraph readParagraph(XmlElement p, Map<String, String> styleNames, {int? ref}) =>
+      _BodyReader((_) => null, const {}, styleNames, null, null)._paragraph(p, ref: ref).whereType<DocxParagraph>().first;
 
   static DocxPageSetup _pageSetup(XmlElement? sectPr) {
     final size = sectPr?.kid('pgSz');
@@ -151,20 +173,34 @@ class DocxReader {
 }
 
 class _BodyReader {
-  _BodyReader(this.pkg, this.rels, this.styleNames);
+  _BodyReader(this.bytes, this.rels, this.styleNames, this.paragraphs, this.tables);
 
-  final OoxmlPackage pkg;
+  final List<int>? Function(String path) bytes;
   final Map<String, String> rels;
   final Map<String, String> styleNames;
+  final List<XmlElement>? paragraphs;
+  final List<XmlElement>? tables;
 
   List<DocxBlock> readBlocks(XmlElement container) {
     final blocks = <DocxBlock>[];
     for (final el in container.childElements) {
       switch (el.name.local) {
         case 'p':
-          blocks.addAll(_paragraph(el));
+          final list = paragraphs;
+          int? ref;
+          if (list != null) {
+            ref = list.length;
+            list.add(el);
+          }
+          blocks.addAll(_paragraph(el, ref: ref));
         case 'tbl':
-          blocks.add(_table(el));
+          final list = tables;
+          int? ref;
+          if (list != null) {
+            ref = list.length;
+            list.add(el);
+          }
+          blocks.add(_table(el, ref: ref));
         case 'sdt':
           final content = el.kid('sdtContent');
           if (content != null) blocks.addAll(readBlocks(content));
@@ -173,7 +209,7 @@ class _BodyReader {
     return blocks;
   }
 
-  Iterable<DocxBlock> _paragraph(XmlElement p) sync* {
+  Iterable<DocxBlock> _paragraph(XmlElement p, {int? ref}) sync* {
     final pPr = p.kid('pPr');
     final styleId = pPr?.kid('pStyle')?.attr('val');
     final styleName = styleId == null ? '' : (styleNames[styleId] ?? styleId.toLowerCase());
@@ -223,7 +259,7 @@ class _BodyReader {
 
     collectRuns(p);
     if (pPr?.kid('pageBreakBefore')?.isOn == true) yield const DocxPageBreak();
-    yield DocxParagraph(runs: runs, headingLevel: heading, isTitle: isTitle, listLevel: listLevel, align: align);
+    yield DocxParagraph(runs: runs, headingLevel: heading, isTitle: isTitle, listLevel: listLevel, align: align, ref: ref);
     yield* images;
     if (p.deep('br').any((br) => br.attr('type') == 'page')) {
       yield const DocxPageBreak();
@@ -265,17 +301,18 @@ class _BodyReader {
   DocxImage? _image(XmlElement blip, XmlElement run) {
     final id = blip.attr('embed');
     final target = id == null ? null : rels[id];
-    final data = target == null ? null : pkg.bytes(target);
+    final data = target == null ? null : bytes(target);
     if (data == null) return null;
     final extent = run.deep('extent').firstOrNull;
     return DocxImage(
-      Uint8List.fromList(data),
+      // Keep the same list when it already is one, so pictures aren't decoded again after edits.
+      data is Uint8List ? data : Uint8List.fromList(data),
       widthEmu: int.tryParse(extent?.attr('cx') ?? ''),
       heightEmu: int.tryParse(extent?.attr('cy') ?? ''),
     );
   }
 
-  DocxTable _table(XmlElement tbl) {
+  DocxTable _table(XmlElement tbl, {int? ref}) {
     final rows = <List<String>>[];
     for (final tr in tbl.kids('tr')) {
       rows.add([
@@ -283,6 +320,6 @@ class _BodyReader {
           tc.kids('p').map((p) => p.deep('t').map((t) => t.innerText).join()).join('\n'),
       ]);
     }
-    return DocxTable(rows);
+    return DocxTable(rows, ref: ref);
   }
 }

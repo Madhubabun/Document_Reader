@@ -8,7 +8,9 @@ import '../app_scope.dart';
 import '../models/doc_file.dart';
 import '../services/document_actions.dart';
 import '../services/library_store.dart';
+import '../services/ooxml/docx_editor.dart';
 import '../services/ooxml/docx_reader.dart';
+import '../services/ooxml/ooxml_editor.dart';
 import '../services/ooxml/pptx_reader.dart';
 import '../services/ooxml/xlsx_editor.dart';
 import '../services/ooxml/xlsx_reader.dart';
@@ -26,8 +28,8 @@ Future<Object> parseOfficeFile(String path) async {
 }
 
 Object _parse((DocKind, Uint8List) input) => switch (input.$1) {
-      DocKind.word => DocxReader.read(input.$2),
-      // Excel files open straight into the editor, which reads them too.
+      // Word and Excel files open straight into their editors, which read them too.
+      DocKind.word => DocxEditor.open(input.$2),
       DocKind.excel => XlsxEditor.open(input.$2),
       DocKind.powerpoint => PptxReader.read(input.$2),
       _ => throw UnsupportedError('Not an Office file'),
@@ -51,7 +53,8 @@ class _OfficeReaderScreenState extends State<OfficeReaderScreen> {
   // Saving edits: changes are written a moment after the last edit, when the
   // app goes to the background, and when the reader closes.
   late DocFile _file = widget.file;
-  XlsxEditor? _editor;
+  DocumentEditor? _editor;
+  bool _editing = false;
   String? _saveNote;
   Timer? _saveTimer;
   Future<void> _saving = Future.value();
@@ -143,8 +146,21 @@ class _OfficeReaderScreenState extends State<OfficeReaderScreen> {
                   return ListenableBuilder(
                     listenable: settings,
                     builder: (context, _) => switch (snap.data!) {
+                      DocxEditor e => WordView(
+                          document: e.document,
+                          editor: (_editor ??= e) as DocxEditor,
+                          editing: _editing,
+                          tone: settings.pageTone,
+                          outlineRequests: _outlineRequests,
+                          onStatus: _setSubtitle,
+                          onChanged: _changed,
+                          onDoneEditing: () {
+                            _saveNow();
+                            setState(() => _editing = false);
+                          },
+                        ),
                       DocxDocument d => WordView(document: d, tone: settings.pageTone, outlineRequests: _outlineRequests, onStatus: _setSubtitle),
-                      XlsxEditor e => SpreadsheetView(workbook: e.workbook, editor: _editor ??= e, onStatus: _setSubtitle, onChanged: _changed),
+                      XlsxEditor e => SpreadsheetView(workbook: e.workbook, editor: (_editor ??= e) as XlsxEditor, onStatus: _setSubtitle, onChanged: _changed),
                       XlsxWorkbook w => SpreadsheetView(workbook: w, onStatus: _setSubtitle),
                       PptxPresentation s => SlidesView(presentation: s, outlineRequests: _outlineRequests, onStatus: _setSubtitle),
                       _ => const SizedBox.shrink(),
@@ -163,7 +179,7 @@ class _OfficeReaderScreenState extends State<OfficeReaderScreen> {
                 actions: [IconButton(tooltip: 'Share', onPressed: () => shareDocument(widget.file), icon: const Icon(Icons.ios_share_rounded, size: 21))],
               ),
             ),
-            if (kind != DocKind.excel)
+            if (kind != DocKind.excel && !_editing)
               Positioned(
                 left: 0,
                 right: 0,
@@ -175,6 +191,11 @@ class _OfficeReaderScreenState extends State<OfficeReaderScreen> {
                     () => _outlineRequests.value++,
                   ),
                   DockAction(Icons.edit_outlined, 'Edit', () {
+                    if (kind == DocKind.word) {
+                      // Still opening when there's no editor yet.
+                      if (_editor is DocxEditor) setState(() => _editing = true);
+                      return;
+                    }
                     showComingSoon(
                       context,
                       'Editing ${kind.label}',
