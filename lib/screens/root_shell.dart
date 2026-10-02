@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
@@ -73,10 +74,11 @@ class _RootShellState extends State<RootShell> {
     }
     if (pictures.isNotEmpty) {
       if (documents.isNotEmpty) messenger.showSnackBar(SnackBar(content: Text('Added ${documents.length} ${documents.length == 1 ? 'file' : 'files'} to your library.')));
-      await navigator.push(MaterialPageRoute<void>(builder: (_) => ImagesToPdfScreen(initial: pictures)));
+      // Not awaited: more files may arrive while this screen is open.
+      unawaited(navigator.push(MaterialPageRoute<void>(builder: (_) => ImagesToPdfScreen(initial: pictures))));
     } else if (documents.isNotEmpty) {
       if (documents.length > 1) messenger.showSnackBar(SnackBar(content: Text('Added ${documents.length} files. Opening the first.')));
-      await openDocument(context, documents.first);
+      unawaited(openDocument(context, documents.first));
     }
   }
 

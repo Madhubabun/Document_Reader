@@ -95,7 +95,7 @@ class PdfToolsScreen extends StatelessWidget {
               final file = await _pickOne(context, 'Make which PDF smaller?');
               if (file == null || !context.mounted) return;
               final smaller = await compressFile(context, file);
-              if (context.mounted) await _open(context, smaller);
+              if (smaller != null && context.mounted) await _open(context, smaller.file, password: smaller.password);
             }),
             tool('Add a password', 'Lock a PDF with AES-256', Icons.lock_outline_rounded, violet, const Key('tool-lock'), () async {
               final file = await _pickOne(context, 'Lock which PDF?');

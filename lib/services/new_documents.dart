@@ -475,6 +475,18 @@ Uint8List _presentation(String title, List<_Slide> slides) {
         '<a:latin typeface="+mn-lt"/><a:ea typeface="+mn-ea"/><a:cs typeface="+mn-cs"/></a:defRPr></a:lvl1pPr></p:defaultTextStyle></p:presentation>',
     contentType: '$_ct.presentation.main+xml',
   );
+  // The small parts PowerPoint itself always writes.
+  final n = slides.length + 3;
+  presRels.addAll([
+    ('rId$n', OoxmlPackageWriter.relType('presProps'), 'presProps.xml'),
+    ('rId${n + 1}', OoxmlPackageWriter.relType('viewProps'), 'viewProps.xml'),
+    ('rId${n + 2}', OoxmlPackageWriter.relType('tableStyles'), 'tableStyles.xml'),
+  ]);
+  pkg.addXml('ppt/presProps.xml', '<p:presentationPr $_ns/>', contentType: '$_ct.presProps+xml');
+  pkg.addXml('ppt/viewProps.xml', '<p:viewPr $_ns><p:normalViewPr><p:restoredLeft sz="15620"/><p:restoredTop sz="94660"/></p:normalViewPr><p:gridSpacing cx="76200" cy="76200"/></p:viewPr>',
+      contentType: '$_ct.viewProps+xml');
+  pkg.addXml('ppt/tableStyles.xml', '<a:tblStyleLst xmlns:a="$_a" def="{5C22544A-7EE6-4342-B048-85BDC9FD1C3A}"/>',
+      contentType: 'application/vnd.openxmlformats-officedocument.presentationml.tableStyles+xml');
   pkg.addXml('ppt/_rels/presentation.xml.rels', OoxmlPackageWriter.rels(presRels));
   pkg.addRootRels('ppt/presentation.xml');
   pkg.addDocProps(title: title);

@@ -212,4 +212,19 @@ void main() {
     }
     await doc.dispose();
   }, skip: pdfium == null);
+
+  test('text layer lines outside Windows-1252 use the embedded font', () async {
+    final font = File('assets/fonts/office/Carlito-normal-400.ttf').readAsBytesSync();
+    expect(fitsWinAnsi('Café “quoted” – 5€'), isTrue);
+    expect(fitsWinAnsi('Łódź'), isFalse);
+    final out = await applyPdfEdits(await blankPdf(), [
+      const TextLayerEdit(1, lines: [(text: 'Łódź, Kraków', rect: Rect.fromLTWH(0.1, 0.1, 0.5, 0.04)), (text: 'Plain line', rect: Rect.fromLTWH(0.1, 0.2, 0.5, 0.04))]),
+    ], unicodeFont: font);
+    keep('text-layer-unicode.pdf', out);
+    final doc = await PdfDocument.openData(out);
+    final text = (await doc.pages.first.loadText())!.fullText;
+    expect(text, contains('Łódź, Kraków'));
+    expect(text, contains('Plain line'));
+    await doc.dispose();
+  }, skip: pdfium == null);
 }

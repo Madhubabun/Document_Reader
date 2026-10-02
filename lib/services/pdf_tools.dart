@@ -1,4 +1,5 @@
 import 'dart:ffi';
+import 'dart:isolate';
 import 'dart:math' as math;
 import 'dart:typed_data';
 
@@ -119,7 +120,7 @@ Future<Uint8List> lockPdf(PdfSource source, String password) async {
   if (password.isEmpty) throw const PdfToolError('Type a password.');
   final plain = await _run<Uint8List, ({Uint8List pdf, String? password, String? modulePath})>(_unlockInWorker, (pdf: source.bytes, password: source.password, modulePath: _module));
   try {
-    return encryptPdf(plain, password);
+    return await Isolate.run(() => encryptPdf(plain, password));
   } on FormatException catch (e) {
     throw PdfToolError('This PDF could not be locked: ${e.message}');
   }
@@ -187,8 +188,8 @@ Future<Set<int>> _pagesThatDiffer(PdfSource source, Uint8List after, List<int> p
   }
 }
 
-/// True when two BGRA renders match apart from small, even differences:
-/// each 10x10 block's average colour within 24 levels.
+/// True when two BGRA renders match apart from small differences: in each
+/// 10x10 block, colours differ by under 24 levels on average.
 bool _similar(Uint8List x, Uint8List y, int width, int height) {
   const block = 10;
   for (var by = 0; by < height; by += block) {
@@ -199,13 +200,13 @@ bool _similar(Uint8List x, Uint8List y, int width, int height) {
         for (var xx = bx; xx < math.min(bx + block, width); xx++) {
           final i = (yy * width + xx) * 4;
           for (var c = 0; c < 3; c++) {
-            sum[c] += x[i + c] - y[i + c];
+            sum[c] += (x[i + c] - y[i + c]).abs();
           }
           count++;
         }
       }
       for (var c = 0; c < 3; c++) {
-        if ((sum[c] / count).abs() > 24) return false;
+        if (sum[c] / count > 24) return false;
       }
     }
   }
@@ -494,10 +495,9 @@ bool _shrinkImage(PDFium pdfium, FPDF_DOCUMENT doc, FPDF_PAGE page, FPDF_PAGEOBJ
   if (jpeg.length > rawSize * 0.85) return false;
 
   // Hand the JPEG to PDFium through a file-access callback.
-  final data = arena<Uint8>(jpeg.length)..asTypedList(jpeg.length).setAll(0, jpeg);
   int getBlock(Pointer<Void> param, int position, Pointer<UnsignedChar> buffer, int size) {
     if (position + size > jpeg.length) return 0;
-    buffer.cast<Uint8>().asTypedList(size).setAll(0, data.asTypedList(jpeg.length).sublist(position, position + size));
+    buffer.cast<Uint8>().asTypedList(size).setRange(0, size, jpeg, position);
     return 1;
   }
 

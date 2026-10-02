@@ -73,6 +73,7 @@ class _TextFromImageScreenState extends State<TextFromImageScreen> {
     try {
       final parts = <String>[];
       for (var i = 0; i < pictures.length; i++) {
+        if (!mounted) return;
         setState(() => _status = pictures.length == 1 ? 'Reading the text…' : 'Reading picture ${i + 1} of ${pictures.length}…');
         final text = await _reader.readPictureText(pictures[i]);
         if (text.trim().isNotEmpty) parts.add(text.trim());

@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../../app_scope.dart';
 import '../../models/doc_file.dart';
@@ -139,6 +140,16 @@ class _PasswordDialogState extends State<_PasswordDialog> {
 /// Reads [file] and, when it has a password, asks for it until it is right
 /// (trying [known] first). Null when the user gives up.
 Future<PdfSource?> openSource(BuildContext context, DocFile file, {String? known}) async {
+  final messenger = ScaffoldMessenger.of(context);
+  try {
+    return await _openSource(context, file, known);
+  } catch (e) {
+    _say(messenger, '${file.name} could not be opened: ${_reason(e)}');
+    return null;
+  }
+}
+
+Future<PdfSource?> _openSource(BuildContext context, DocFile file, String? known) async {
   final bytes = await File(file.path).readAsBytes();
   if (!await needsPassword(bytes)) return PdfSource(bytes);
   if (known != null && await passwordOpens(bytes, known)) return PdfSource(bytes, password: known);
@@ -156,6 +167,7 @@ String _reason(Object e) => switch (e) {
       PdfToolError(:final message) => message,
       OcrUnavailable(:final message) => message,
       StateError(:final message) => message,
+      FileSystemException() => 'the file is missing or unreadable.',
       _ => '$e',
     };
 
@@ -262,7 +274,7 @@ Future<ToolChange?> makeSearchable(BuildContext context, DocFile file, {String? 
     }
     if (!context.mounted) return null;
     final updated = await runWithProgress(
-        context, 'Saving…', (_) async => library.saveEdited(file, await applyPdfEdits(source.bytes, edits, password: source.password)));
+        context, 'Saving…', (_) async => library.saveEdited(file, await applyPdfEdits(source.bytes, edits, password: source.password, unicodeFont: await _unicodeFontFor(edits))));
     _say(messenger, 'Text added to ${edits.length} ${edits.length == 1 ? 'page' : 'pages'}. You can now search and copy it.');
     return (file: updated, password: source.password);
   } catch (e) {
@@ -273,8 +285,18 @@ Future<ToolChange?> makeSearchable(BuildContext context, DocFile file, {String? 
   }
 }
 
-/// Saves a smaller copy and returns it.
-Future<DocFile?> compressFile(BuildContext context, DocFile file, {String? password}) async {
+/// Carlito (metric-compatible with Calibri, with Latin Extended letters),
+/// only when some recognised line needs more than Helvetica's Windows-1252.
+Future<Uint8List?> _unicodeFontFor(List<TextLayerEdit> edits) async {
+  final needed = edits.any((e) => e.lines.any((l) => !fitsWinAnsi(l.text)));
+  if (!needed) return null;
+  final data = await rootBundle.load('assets/fonts/office/Carlito-normal-400.ttf');
+  return data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes);
+}
+
+/// Saves a smaller copy and returns it with its password (a smaller copy
+/// keeps the original's).
+Future<ToolChange?> compressFile(BuildContext context, DocFile file, {String? password}) async {
   final library = AppScope.of(context).library;
   final messenger = ScaffoldMessenger.of(context);
   final source = await openSource(context, file, known: password);
@@ -311,7 +333,7 @@ Future<DocFile?> compressFile(BuildContext context, DocFile file, {String? passw
     }
     final saved = await library.importBytes('${_base(file)} (smaller).pdf', result.bytes);
     _say(messenger, '${formatSize(source.bytes.length)} → ${formatSize(result.bytes.length)}. Saved as ${saved.name}.');
-    return saved;
+    return (file: saved, password: source.password);
   } catch (e) {
     _say(messenger, 'Could not make it smaller: ${_reason(e)}');
     return null;
@@ -344,9 +366,15 @@ Future<List<DocFile>> splitFile(BuildContext context, DocFile file, {String? pas
   final messenger = ScaffoldMessenger.of(context);
   final source = await openSource(context, file, known: password);
   if (source == null || !context.mounted) return const [];
-  final doc = await openPdfData(source.bytes, source.password);
-  final count = doc.pages.length;
-  await doc.dispose();
+  final int count;
+  try {
+    final doc = await openPdfData(source.bytes, source.password);
+    count = doc.pages.length;
+    await doc.dispose();
+  } catch (e) {
+    _say(messenger, 'Could not open the PDF: ${_reason(e)}');
+    return const [];
+  }
   if (!context.mounted) return const [];
   if (count < 2) {
     _say(messenger, 'This PDF has only one page.');

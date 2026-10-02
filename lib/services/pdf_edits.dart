@@ -122,11 +122,14 @@ class PdfFormField {
 /// desktop PDF apps sign and annotate. PDFium writes a broken
 /// cross-reference stream when it appends to files that use one, so those
 /// are rewritten in full.
-Future<Uint8List> applyPdfEdits(Uint8List pdf, List<PdfEdit> edits, {String? password}) async {
+///
+/// [unicodeFont] is a TrueType font embedded for [TextLayerEdit] lines with
+/// letters Helvetica can't encode (outside Windows-1252).
+Future<Uint8List> applyPdfEdits(Uint8List pdf, List<PdfEdit> edits, {String? password, Uint8List? unicodeFont}) async {
   await PdfrxEntryFunctions.instance.init();
   final result = await PdfrxEntryFunctions.instance.compute(
     _applyInWorker,
-    (pdf: pdf, edits: edits, password: password, modulePath: Pdfrx.pdfiumModulePath, incremental: usesXrefTable(pdf)),
+    (pdf: pdf, edits: edits, password: password, modulePath: Pdfrx.pdfiumModulePath, incremental: usesXrefTable(pdf), unicodeFont: unicodeFont),
   );
   if (result.error != null) throw StateError(result.error!);
   return result.bytes!;
@@ -162,12 +165,13 @@ bool usesXrefTable(Uint8List pdf) {
 // Everything below runs on pdfrx's PDFium worker isolate, where PDFium is
 // initialised and no other PDFium call can run at the same time.
 
-typedef _ApplyMessage = ({Uint8List pdf, List<PdfEdit> edits, String? password, String? modulePath, bool incremental});
+typedef _ApplyMessage = ({Uint8List pdf, List<PdfEdit> edits, String? password, String? modulePath, bool incremental, Uint8List? unicodeFont});
 
 ({Uint8List? bytes, String? error}) _applyInWorker(_ApplyMessage m) {
   try {
     return using((arena) {
       final session = PdfiumSession(getPdfium(modulePath: m.modulePath), m.pdf, m.password, arena);
+      final fonts = _TextFonts(session, m.unicodeFont);
       try {
         // Fields first: the others add annotations, which would shift the
         // indexes that identify fields.
@@ -194,7 +198,7 @@ typedef _ApplyMessage = ({Uint8List pdf, List<PdfEdit> edits, String? password, 
                 case ImageEdit():
                   _addImage(session, page, e);
                 case TextLayerEdit():
-                  _addTextLayer(session, page, e);
+                  _addTextLayer(session, page, e, fonts);
                 case FieldEdit():
                   break;
               }
@@ -206,6 +210,7 @@ typedef _ApplyMessage = ({Uint8List pdf, List<PdfEdit> edits, String? password, 
         }
         return (bytes: session.save(incremental: m.incremental), error: null);
       } finally {
+        fonts.close();
         session.close();
       }
     });
@@ -483,12 +488,55 @@ void _addImage(PdfiumSession s, FPDF_PAGE page, ImageEdit e) {
   }
 }
 
-/// Adds each line as invisible Helvetica text stretched over its box.
-void _addTextLayer(PdfiumSession s, FPDF_PAGE page, TextLayerEdit e) {
+/// Whether every character of [text] is in Windows-1252, the encoding of
+/// the standard Helvetica font.
+bool fitsWinAnsi(String text) {
+  const extras = '€‚ƒ„…†‡ˆ‰Š‹ŒŽ‘’“”•–—˜™š›œžŸ';
+  for (final rune in text.runes) {
+    if ((rune >= 0x20 && rune <= 0x7E) || (rune >= 0xA0 && rune <= 0xFF) || rune == 9) continue;
+    if (!extras.runes.contains(rune)) return false;
+  }
+  return true;
+}
+
+/// Fonts for text layers, loaded once per document so each is stored once.
+class _TextFonts {
+  _TextFonts(this.s, this.unicodeData);
+
+  final PdfiumSession s;
+  final Uint8List? unicodeData;
+  FPDF_FONT? _helvetica;
+  FPDF_FONT? _unicode;
+
+  FPDF_FONT get helvetica {
+    final font = _helvetica ??= s.pdfium.FPDFText_LoadStandardFont(s.doc, 'Helvetica'.toNativeUtf8(allocator: s.arena).cast());
+    if (font == nullptr) throw StateError('The text layer could not be added.');
+    return font;
+  }
+
+  /// The font for [text]: Helvetica when it can show it, else the embedded
+  /// TrueType font (with a Unicode map), else Helvetica anyway.
+  FPDF_FONT fontFor(String text) {
+    if (fitsWinAnsi(text) || unicodeData == null) return helvetica;
+    if (_unicode == null) {
+      final data = s.arena<Uint8>(unicodeData!.length)..asTypedList(unicodeData!.length).setAll(0, unicodeData!);
+      // 2 is FPDF_FONT_TRUETYPE; cid 1 writes a CID font with ToUnicode.
+      _unicode = s.pdfium.FPDFText_LoadFont(s.doc, data, unicodeData!.length, 2, 1);
+    }
+    return _unicode == nullptr ? helvetica : _unicode!;
+  }
+
+  void close() {
+    for (final f in [_helvetica, _unicode]) {
+      if (f != null && f != nullptr) s.pdfium.FPDFFont_Close(f);
+    }
+  }
+}
+
+/// Adds each line as invisible text stretched over its box.
+void _addTextLayer(PdfiumSession s, FPDF_PAGE page, TextLayerEdit e, _TextFonts fonts) {
   final pdfium = s.pdfium;
-  final font = pdfium.FPDFText_LoadStandardFont(s.doc, 'Helvetica'.toNativeUtf8(allocator: s.arena).cast());
-  if (font == nullptr) throw StateError('The text layer could not be added.');
-  try {
+  {
     var added = false;
     final left = s.arena<Float>();
     final bottom = s.arena<Float>();
@@ -497,7 +545,7 @@ void _addTextLayer(PdfiumSession s, FPDF_PAGE page, TextLayerEdit e) {
     for (final line in e.lines) {
       final text = line.text.trim();
       if (text.isEmpty || line.rect.width <= 0 || line.rect.height <= 0) continue;
-      final object = pdfium.FPDFPageObj_CreateTextObj(s.doc, font, 1);
+      final object = pdfium.FPDFPageObj_CreateTextObj(s.doc, fonts.fontFor(text), 1);
       if (object == nullptr) continue;
       if (pdfium.FPDFText_SetText(object, toWide(text, s.arena)) == 0 ||
           pdfium.FPDFPageObj_GetBounds(object, left, bottom, right, top) == 0 ||
@@ -520,7 +568,5 @@ void _addTextLayer(PdfiumSession s, FPDF_PAGE page, TextLayerEdit e) {
       added = true;
     }
     if (added && pdfium.FPDFPage_GenerateContent(page) == 0) throw StateError('The page could not be updated.');
-  } finally {
-    pdfium.FPDFFont_Close(font);
   }
 }
