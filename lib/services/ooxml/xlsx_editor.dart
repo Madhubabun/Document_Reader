@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'package:archive/archive.dart';
 import 'package:xml/xml.dart';
 
+import 'ooxml_editor.dart';
 import 'ooxml_writer.dart';
 import 'xlsx_formula.dart';
 import 'xlsx_reader.dart';
@@ -39,7 +40,7 @@ class _Sheet {
 /// XML, themes) is copied byte for byte, so the file keeps everything Excel
 /// put in it. Cell formats are preserved, new formats are appended to the
 /// existing style sheet, and the workbook asks Excel to recalculate on open.
-class XlsxEditor {
+class XlsxEditor implements DocumentEditor {
   XlsxEditor._(this._archive);
 
   static const _relNs = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
@@ -61,9 +62,11 @@ class XlsxEditor {
   late List<XlsxSheet> _snapshots;
 
   /// True once any edit has been made since opening or the last [markSaved].
+  @override
   bool get hasChanges => _version != _savedVersion;
   int _version = 0;
   int _savedVersion = 0;
+  @override
   bool get canUndo => _undo.isNotEmpty;
 
   /// Current contents for display, one entry per sheet.
@@ -160,6 +163,7 @@ class XlsxEditor {
     if (_undo.length > _maxUndo) _undo.removeAt(0);
   }
 
+  @override
   bool undo() {
     if (_undo.isEmpty) return false;
     final state = _undo.removeLast();
@@ -1141,6 +1145,7 @@ class XlsxEditor {
   // Saving
 
   /// The edited workbook. Untouched parts are copied unchanged.
+  @override
   Uint8List save() {
     final out = Archive();
     final written = <String>{};
@@ -1163,6 +1168,7 @@ class XlsxEditor {
   }
 
   /// Call after the bytes from [save] were written, so [hasChanges] resets.
+  @override
   void markSaved() => _savedVersion = _version;
 
   static String _serialize(XmlDocument doc) {

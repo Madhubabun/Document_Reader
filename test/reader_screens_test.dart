@@ -6,6 +6,7 @@ import 'package:doc_reader/app_scope.dart';
 import 'package:doc_reader/models/doc_file.dart';
 import 'package:doc_reader/screens/office_reader_screen.dart';
 import 'package:doc_reader/screens/pdf_reader_screen.dart';
+import 'package:doc_reader/services/ooxml/docx_reader.dart';
 import 'package:doc_reader/services/ooxml/pptx_reader.dart';
 import 'package:doc_reader/services/ooxml/xlsx_reader.dart';
 import 'package:doc_reader/services/library_store.dart';
@@ -174,6 +175,60 @@ void main() {
     expect(saved.sheets.first.cell(1, 0)!.style.bold, isTrue);
     final versions = (await tester.runAsync(() => library.versionsOf(file)))!;
     expect(XlsxReader.read(versions.last.readAsBytesSync()).sheets.first.cell(1, 1)!.value, '10');
+    await tester.binding.setSurfaceSize(null);
+    dir.deleteSync(recursive: true);
+  });
+
+  testWidgets('Word paragraphs can be typed into, split, formatted and saved', (tester) async {
+    SharedPreferences.setMockInitialValues({});
+    final prefs = await SharedPreferences.getInstance();
+    final dir = Directory.systemTemp.createTempSync('docx_edit');
+    final library = LibraryStore(prefs, dir);
+    late DocFile file;
+    await tester.runAsync(() async => file = await library.importBytes('Brief.docx', File('test/fixtures/sample.docx').readAsBytesSync()));
+    await tester.binding.setSurfaceSize(const Size(430, 900));
+    await tester.pumpWidget(AppScope(
+      library: library,
+      settings: SettingsStore(prefs),
+      child: MaterialApp(theme: AppTheme.dark(), home: OfficeReaderScreen(file: file)),
+    ));
+    for (var i = 0; i < 50 && find.text('Project Brief', findRichText: true).evaluate().isEmpty; i++) {
+      await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 50)));
+      await tester.pump();
+    }
+    await tester.tap(find.text('Edit'));
+    await tester.pump();
+    expect(find.text('Done'), findsOneWidget);
+
+    // Tap the centred line and type at its end.
+    await tester.tap(find.text('Centered line', findRichText: true));
+    await tester.pump();
+    expect(find.byKey(const ValueKey('word-editor')), findsOneWidget);
+    tester.testTextInput.updateEditingValue(const TextEditingValue(text: '\u200BCentered line!', selection: TextSelection.collapsed(offset: 15)));
+    await tester.pump();
+    // Enter after "Centered".
+    tester.testTextInput.updateEditingValue(const TextEditingValue(text: '\u200BCentered\n line!', selection: TextSelection.collapsed(offset: 10)));
+    await tester.pump();
+    final field = tester.widget<TextField>(find.byKey(const ValueKey('word-editor')));
+    expect(field.controller!.text, '\u200B line!');
+    // Bold the whole new paragraph.
+    await tester.tap(find.byTooltip('Bold'));
+    await tester.pump();
+
+    await tester.tap(find.text('Done'));
+    await tester.pump();
+    for (var i = 0; i < 40 && library.byPath(file.path)!.sizeBytes == file.sizeBytes; i++) {
+      await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 50)));
+      await tester.pump();
+    }
+    final saved = DocxReader.read(File(file.path).readAsBytesSync()).blocks.whereType<DocxParagraph>().toList();
+    final i = saved.indexWhere((p) => p.text == 'Centered');
+    expect(i, isNonNegative);
+    expect(saved[i + 1].text, ' line!');
+    expect(saved[i + 1].runs.every((r) => r.bold), isTrue);
+    expect(saved[i + 1].align, ParagraphAlign.center);
+    expect((await tester.runAsync(() => library.versionsOf(file)))!, hasLength(1));
+    await tester.pumpWidget(const SizedBox());
     await tester.binding.setSurfaceSize(null);
     dir.deleteSync(recursive: true);
   });
