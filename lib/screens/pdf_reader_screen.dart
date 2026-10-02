@@ -9,12 +9,16 @@ import 'package:pdfrx/pdfrx.dart';
 import '../app_scope.dart';
 import '../models/doc_file.dart';
 import '../services/document_actions.dart';
-import '../services/pdf_signer.dart';
+import '../services/pdf_edits.dart';
 import '../services/signature_store.dart';
 import '../theme/app_theme.dart';
 import '../widgets/glass.dart';
 import '../widgets/reader_chrome.dart';
+import 'pdf/pdf_form.dart';
+import 'pdf/pdf_markup.dart';
 import 'signature_pad_screen.dart';
+
+enum _Mode { view, sign, markup, form }
 
 /// Immersive PDF reader: tap the page to show or hide the floating glass bars.
 class PdfReaderScreen extends StatefulWidget {
@@ -47,9 +51,18 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
   String? _password;
   bool _passwordReused = false;
 
+  _Mode _mode = _Mode.view;
+
   /// The signature being placed, if any.
   final _placing = ValueNotifier<_Placement?>(null);
-  bool _stamping = false;
+
+  /// Annotations or form values not yet saved.
+  MarkupController? _markup;
+  MarkupTool? _markupTool;
+  FormController? _form;
+
+  /// Saving, or reading the form.
+  bool _busy = false;
 
   @override
   void dispose() {
@@ -58,6 +71,8 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
     _searchField.dispose();
     _placing.value?.image.dispose();
     _placing.dispose();
+    _markup?.dispose();
+    _form?.dispose();
     super.dispose();
   }
 
@@ -161,7 +176,7 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
   /// on the current page to drag into place.
   Future<void> _sign() async {
     final doc = _document;
-    if (doc == null || _stamping) return;
+    if (doc == null || _busy) return;
     final store = AppScope.of(context).library.signatures;
     final png = await _pickSignature(store);
     if (png == null || !mounted) return;
@@ -184,10 +199,95 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
     }
     _placing.value?.image.dispose();
     _placing.value = _Placement(page: _page, rect: Rect.fromLTWH((1 - w) / 2, (0.72 - h / 2).clamp(0.0, 1 - h), w, h), image: image, rgba: rgba);
+    _enter(_Mode.sign);
+  }
+
+  void _enter(_Mode mode) {
     setState(() {
+      _mode = mode;
       _chrome = true;
       if (_searching) _toggleSearch();
     });
+  }
+
+  void _startMarkup() {
+    if (_document == null || _busy) return;
+    _markup?.dispose();
+    _markup = MarkupController()..addListener(_onMarkupChanged);
+    _markupTool = _markup!.tool;
+    _enter(_Mode.markup);
+  }
+
+  /// Drawing tools lock the page in place so drags draw; Scroll frees it.
+  void _onMarkupChanged() {
+    final tool = _markup?.tool;
+    if (tool != _markupTool && mounted) setState(() => _markupTool = tool);
+  }
+
+  Future<void> _startForm() async {
+    if (_document == null || _busy) return;
+    final messenger = ScaffoldMessenger.of(context);
+    setState(() => _busy = true);
+    try {
+      final fields = await readFormFields(await File(_file.path).readAsBytes(), password: _password);
+      if (!mounted) return;
+      if (fields.isEmpty) {
+        messenger.showSnackBar(_snack('This PDF has no fillable fields.'));
+        return;
+      }
+      _form?.dispose();
+      _form = FormController(fields);
+      _enter(_Mode.form);
+    } catch (e) {
+      messenger.showSnackBar(_snack('Could not read the form: ${_reason(e)}'));
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  static String _reason(Object e) => e is StateError ? e.message : '$e';
+
+  bool get _hasUnsaved => switch (_mode) {
+        _Mode.view => false,
+        _Mode.sign => true,
+        _Mode.markup => _markup?.edits.isNotEmpty ?? false,
+        _Mode.form => _form?.hasChanges ?? false,
+      };
+
+  /// Leaves the current tool, asking first when there is unsaved work.
+  Future<void> _cancelMode() async {
+    if (_busy) return;
+    if (_hasUnsaved && _mode != _Mode.sign) {
+      final discard = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Discard your changes?'),
+          content: const Text('They have not been saved to the file.'),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Keep editing')),
+            FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Discard')),
+          ],
+        ),
+      );
+      if (discard != true || !mounted) return;
+    }
+    _leaveMode();
+  }
+
+  void _leaveMode() {
+    _placing.value?.image.dispose();
+    _placing.value = null;
+    // The bars and page layers still listen to these until the next frame.
+    final markup = _markup;
+    final form = _form;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      markup?.dispose();
+      form?.dispose();
+    });
+    _markup = null;
+    _markupTool = null;
+    _form = null;
+    setState(() => _mode = _Mode.view);
   }
 
   Future<Uint8List?> _pickSignature(SignatureStore store) async {
@@ -256,12 +356,6 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
     });
   }
 
-  void _cancelPlacing() {
-    _placing.value?.image.dispose();
-    _placing.value = null;
-    setState(() {});
-  }
-
   void _movePlacing(int delta) {
     final placing = _placing.value;
     final count = _document?.pages.length ?? 1;
@@ -271,24 +365,28 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
     _controller.goToPage(pageNumber: page);
   }
 
-  /// Writes the placed signature into the file, keeping a backup of the
-  /// previous version, and reopens it.
   Future<void> _applySignature() async {
     final placing = _placing.value;
-    if (placing == null || _stamping) return;
+    if (placing == null) return;
+    await _save(
+      [ImageEdit(placing.page, rect: placing.rect, rgba: placing.rgba, width: placing.image.width, height: placing.image.height)],
+      done: 'Signed and saved. The unsigned version is kept as a backup.',
+      failed: 'Could not sign this PDF',
+    );
+  }
+
+  /// Writes [edits] into the file, keeping a backup of the previous version,
+  /// and reopens it.
+  Future<void> _save(List<PdfEdit> edits, {required String done, required String failed}) async {
+    if (_busy || edits.isEmpty) return;
     final library = AppScope.of(context).library;
     final messenger = ScaffoldMessenger.of(context);
-    setState(() => _stamping = true);
+    setState(() => _busy = true);
     try {
-      final bytes = await stampSignatures(
-        await File(_file.path).readAsBytes(),
-        [SignaturePlacement(pageNumber: placing.page, rect: placing.rect, rgba: placing.rgba, width: placing.image.width, height: placing.image.height)],
-        password: _password,
-      );
+      final bytes = await applyPdfEdits(await File(_file.path).readAsBytes(), edits, password: _password);
       final updated = await library.saveEdited(_file, bytes);
       if (!mounted) return;
-      placing.image.dispose();
-      _placing.value = null;
+      _leaveMode();
       _searcher?.removeListener(_onSearchChanged);
       _searcher?.dispose();
       setState(() {
@@ -298,16 +396,57 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
         _passwordReused = false;
         _revision++;
       });
-      messenger.showSnackBar(const SnackBar(content: Text('Signed and saved. The unsigned version is kept as a backup.')));
+      messenger.showSnackBar(_snack(done));
     } catch (e) {
-      messenger.showSnackBar(SnackBar(content: Text('Could not sign this PDF: $e')));
+      messenger.showSnackBar(_snack('$failed: ${_reason(e)}'));
     } finally {
-      if (mounted) setState(() => _stamping = false);
+      if (mounted) setState(() => _busy = false);
     }
   }
 
-  List<Widget> _pageOverlays(BuildContext context, Rect pageRect, PdfPage page) => [
-        Positioned.fill(
+  List<Widget> _pageOverlays(BuildContext context, Rect pageRect, PdfPage page) => switch (_mode) {
+        _Mode.view => const [],
+        _Mode.markup => [
+            Positioned.fill(
+              child: MarkupLayer(
+                page: page,
+                pageSize: pageRect.size,
+                controller: _markup!,
+                onNoText: () => _hint('Drag across text to mark it up. This page may be a scan with no text; use the pen instead.'),
+              ),
+            ),
+          ],
+        _Mode.form => [
+            Positioned.fill(
+              child: FormLayer(
+                pageNumber: page.pageNumber,
+                pageSize: pageRect.size,
+                controller: _form!,
+                onLocked: () => _hint('This field is locked by the form and cannot be changed.'),
+              ),
+            ),
+          ],
+        _Mode.sign => [_signatureOverlay(page, pageRect)],
+      };
+
+  void _hint(String message) {
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.hideCurrentSnackBar();
+    messenger.showSnackBar(_snack(message, duration: const Duration(seconds: 3)));
+  }
+
+  /// A message that floats above the bottom bar instead of covering it.
+  SnackBar _snack(String message, {Duration duration = const Duration(seconds: 4)}) {
+    final bar = _mode == _Mode.view ? 100.0 : 210.0;
+    return SnackBar(
+      content: Text(message),
+      duration: duration,
+      behavior: SnackBarBehavior.floating,
+      margin: EdgeInsets.fromLTRB(16, 0, 16, bar + MediaQuery.paddingOf(context).bottom),
+    );
+  }
+
+  Widget _signatureOverlay(PdfPage page, Rect pageRect) => Positioned.fill(
           child: ValueListenableBuilder(
             valueListenable: _placing,
             builder: (context, placing, _) {
@@ -317,112 +456,133 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
               ]);
             },
           ),
-        ),
-      ];
+        );
 
   @override
   Widget build(BuildContext context) {
     final settings = AppScope.of(context).settings;
     final p = context.palette;
     final pages = _document?.pages.length;
-    final placing = _placing.value != null;
-    return Scaffold(
-      backgroundColor: p.background,
-      body: Stack(
-        children: [
-          Positioned.fill(
-            child: ListenableBuilder(
-              listenable: settings,
-              builder: (context, child) {
-                final filter = pageToneFilter(settings.pageTone);
-                return filter == null ? child! : ColorFiltered(colorFilter: filter, child: child);
-              },
-              child: PdfViewer.file(
-                _file.path,
-                key: ValueKey(_revision),
-                controller: _controller,
-                passwordProvider: _providePassword,
-                initialPageNumber: _page,
-                params: PdfViewerParams(
-                  // While a signature is being placed, drags move it, not the page.
-                  panEnabled: !placing,
-                  scaleEnabled: !placing,
-                  pageOverlaysBuilder: _pageOverlays,
-                  backgroundColor: p.background,
-                  margin: 14,
-                  boundaryMargin: const EdgeInsets.only(top: 120, bottom: 140),
-                  pageDropShadow: BoxShadow(color: Colors.black.withValues(alpha: 0.5), blurRadius: 30, offset: const Offset(0, 14)),
-                  pagePaintCallbacks: [(canvas, rect, page) => _searcher?.pageTextMatchPaintCallback(canvas, rect, page)],
-                  onViewerReady: (document, controller) => setState(() {
-                    _document = document;
-                    _searcher ??= PdfTextSearcher(_controller)..addListener(_onSearchChanged);
-                  }),
-                  onPageChanged: (page) {
-                    if (page != null) setState(() => _page = page);
-                  },
-                  onGeneralTap: (context, controller, details) {
-                    if (placing) return false;
-                    if (details.type == PdfViewerGeneralTapType.tap && details.tapOn == PdfViewerPart.background) {
-                      setState(() => _chrome = !_chrome);
-                    }
-                    return false;
-                  },
-                  errorBannerBuilder: (context, error, stackTrace, documentRef) => Center(
-                    child: Padding(
-                      padding: const EdgeInsets.all(24),
-                      child: Text('This PDF could not be opened.\n$error', textAlign: TextAlign.center, style: TextStyle(color: p.textMuted)),
+    final editing = _mode != _Mode.view;
+    // Drags draw or move the signature instead of scrolling the page.
+    final locked = _mode == _Mode.sign || (_mode == _Mode.markup && _markupTool != MarkupTool.scroll);
+    final chrome = _chrome || editing;
+    return PopScope(
+      canPop: !editing,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) _cancelMode();
+      },
+      child: Scaffold(
+        backgroundColor: p.background,
+        body: Stack(
+          children: [
+            Positioned.fill(
+              child: ListenableBuilder(
+                listenable: settings,
+                builder: (context, child) {
+                  final filter = pageToneFilter(settings.pageTone);
+                  return filter == null ? child! : ColorFiltered(colorFilter: filter, child: child);
+                },
+                child: PdfViewer.file(
+                  _file.path,
+                  key: ValueKey(_revision),
+                  controller: _controller,
+                  passwordProvider: _providePassword,
+                  initialPageNumber: _page,
+                  params: PdfViewerParams(
+                    panEnabled: !locked,
+                    scaleEnabled: !locked,
+                    pageOverlaysBuilder: _pageOverlays,
+                    backgroundColor: p.background,
+                    margin: 14,
+                    boundaryMargin: const EdgeInsets.only(top: 120, bottom: 140),
+                    pageDropShadow: BoxShadow(color: Colors.black.withValues(alpha: 0.5), blurRadius: 30, offset: const Offset(0, 14)),
+                    pagePaintCallbacks: [(canvas, rect, page) => _searcher?.pageTextMatchPaintCallback(canvas, rect, page)],
+                    onViewerReady: (document, controller) => setState(() {
+                      _document = document;
+                      _searcher ??= PdfTextSearcher(_controller)..addListener(_onSearchChanged);
+                    }),
+                    onPageChanged: (page) {
+                      if (page != null) setState(() => _page = page);
+                    },
+                    onGeneralTap: (context, controller, details) {
+                      if (editing) return false;
+                      if (details.type == PdfViewerGeneralTapType.tap && details.tapOn == PdfViewerPart.background) {
+                        setState(() => _chrome = !_chrome);
+                      }
+                      return false;
+                    },
+                    errorBannerBuilder: (context, error, stackTrace, documentRef) => Center(
+                      child: Padding(
+                        padding: const EdgeInsets.all(24),
+                        child: Text('This PDF could not be opened.\n$error', textAlign: TextAlign.center, style: TextStyle(color: p.textMuted)),
+                      ),
                     ),
                   ),
                 ),
               ),
             ),
-          ),
-          AnimatedPositioned(
-            duration: const Duration(milliseconds: 220),
-            curve: Curves.easeOutCubic,
-            left: 0,
-            right: 0,
-            top: _chrome ? 0 : -140,
-            child: Column(
-              children: [
-                ReaderTopBar(
-                  title: _file.name,
-                  subtitle: pages == null ? 'Opening…' : 'Page $_page of $pages',
-                  actions: [
-                    IconButton(tooltip: 'Share', onPressed: () => shareDocument(_file), icon: const Icon(Icons.ios_share_rounded, size: 21)),
-                  ],
-                ),
-                if (_searching && _searcher != null) _SearchBar(controller: _searchField, searcher: _searcher!, onClose: _toggleSearch),
-              ],
+            AnimatedPositioned(
+              duration: const Duration(milliseconds: 220),
+              curve: Curves.easeOutCubic,
+              left: 0,
+              right: 0,
+              top: chrome ? 0 : -140,
+              child: Column(
+                children: [
+                  ReaderTopBar(
+                    title: _file.name,
+                    subtitle: pages == null ? 'Opening…' : 'Page $_page of $pages',
+                    actions: [
+                      IconButton(tooltip: 'Page colour', onPressed: () => showPageToneSheet(context, settings), icon: const Icon(Icons.contrast_rounded, size: 21)),
+                      IconButton(tooltip: 'Share', onPressed: editing ? null : () => shareDocument(_file), icon: const Icon(Icons.ios_share_rounded, size: 21)),
+                    ],
+                  ),
+                  if (_searching && _searcher != null) _SearchBar(controller: _searchField, searcher: _searcher!, onClose: _toggleSearch),
+                ],
+              ),
             ),
-          ),
-          AnimatedPositioned(
-            duration: const Duration(milliseconds: 220),
-            curve: Curves.easeOutCubic,
-            left: 0,
-            right: 0,
-            bottom: _chrome ? 0 : -140,
-            child: placing
-                ? ValueListenableBuilder(
+            AnimatedPositioned(
+              duration: const Duration(milliseconds: 220),
+              curve: Curves.easeOutCubic,
+              left: 0,
+              right: 0,
+              bottom: chrome ? 0 : -140,
+              child: switch (_mode) {
+                _Mode.sign => ValueListenableBuilder(
                     valueListenable: _placing,
                     builder: (context, value, _) => _PlacingBar(
                       page: value?.page ?? _page,
                       pages: pages ?? 1,
-                      busy: _stamping,
-                      onCancel: _cancelPlacing,
+                      busy: _busy,
+                      onCancel: _cancelMode,
                       onMove: _movePlacing,
                       onApply: _applySignature,
                     ),
-                  )
-                : ReaderDock(actions: [
+                  ),
+                _Mode.markup => MarkupBar(
+                    controller: _markup!,
+                    busy: _busy,
+                    onCancel: _cancelMode,
+                    onSave: () => _save(List.of(_markup!.edits), done: 'Annotations saved. The previous version is kept as a backup.', failed: 'Could not save the annotations'),
+                  ),
+                _Mode.form => FormBar(
+                    controller: _form!,
+                    busy: _busy,
+                    onCancel: _cancelMode,
+                    onSave: () => _save(_form!.toEdits(), done: 'Form saved. The previous version is kept as a backup.', failed: 'Could not save the form'),
+                  ),
+                _Mode.view => ReaderDock(actions: [
                     DockAction(Icons.format_list_bulleted_rounded, 'Contents', _showContents),
                     DockAction(Icons.search_rounded, 'Search', _toggleSearch, active: _searching),
+                    DockAction(Icons.edit_note_rounded, 'Annotate', _startMarkup),
                     DockAction(Icons.draw_rounded, 'Sign', _sign),
-                    DockAction(Icons.contrast_rounded, 'Page', () => showPageToneSheet(context, settings)),
-                    DockAction(Icons.ios_share_rounded, 'Share', () => shareDocument(_file)),
+                    DockAction(Icons.assignment_outlined, 'Fill form', _startForm),
                   ]),
-          ),
-        ],
+              },
+            ),
+          ],
+        ),
       ),
     );
   }
