@@ -5,6 +5,7 @@ import '../../services/ooxml/docx_reader.dart';
 import '../../services/settings_store.dart';
 import '../../theme/app_theme.dart';
 import '../../widgets/glass.dart';
+import '../../widgets/pinch_zoom.dart';
 import '../../widgets/reader_chrome.dart';
 
 /// Office fonts first; Carlito and Liberation are metric-compatible stand-ins
@@ -41,6 +42,7 @@ class WordView extends StatefulWidget {
 
 class _WordViewState extends State<WordView> {
   late List<GlobalKey> _keys;
+  final _scroll = ScrollController();
 
   @override
   void initState() {
@@ -52,6 +54,7 @@ class _WordViewState extends State<WordView> {
   @override
   void dispose() {
     widget.outlineRequests.removeListener(_showOutline);
+    _scroll.dispose();
     super.dispose();
   }
 
@@ -113,9 +116,18 @@ class _WordViewState extends State<WordView> {
         ],
       ),
     );
-    return SingleChildScrollView(
-      padding: EdgeInsets.fromLTRB(14, MediaQuery.paddingOf(context).top + 92, 14, 140),
-      child: Center(child: filter == null ? page : ColorFiltered(colorFilter: filter, child: page)),
+    return Padding(
+      padding: EdgeInsets.only(top: MediaQuery.paddingOf(context).top + 84),
+      child: PinchZoom(
+        maxZoom: 2.5,
+        vertical: _scroll,
+        builder: (context, pinching) => SingleChildScrollView(
+          controller: _scroll,
+          physics: pinching ? const NeverScrollableScrollPhysics() : null,
+          padding: const EdgeInsets.fromLTRB(14, 8, 14, 140),
+          child: Center(child: filter == null ? page : ColorFiltered(colorFilter: filter, child: page)),
+        ),
+      ),
     );
   }
 

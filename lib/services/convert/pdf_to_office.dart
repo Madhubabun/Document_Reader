@@ -229,7 +229,7 @@ XlsxWorkbook pdfContentToXlsx(List<PdfPageContent> pages) {
           final n = double.tryParse(digits);
           if (n != null) {
             final v = negative ? -n : n;
-            cells[(r, c)] = XlsxCell(v == v.roundToDouble() && !digits.contains('.') ? v.toInt().toString() : v.toString(), isNumber: true);
+            cells[(r, c)] = XlsxCell(v == v.roundToDouble() && !digits.contains('.') ? v.toInt().toString() : v.toString(), isNumber: true, number: v);
             continue;
           }
         }

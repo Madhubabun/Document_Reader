@@ -75,12 +75,13 @@ class XlsxWriter {
       for (final (c, cell) in cells) {
         final ref = '${XlsxReader.columnName(c)}${r + 1}';
         final style = boldFirstRow && r == 0 ? ' s="1"' : '';
-        final numeric = cell.isNumber && double.tryParse(cell.value) != null;
+        final raw = cell.rawValue;
+        final numeric = cell.isNumber && double.tryParse(raw) != null;
         if (cell.formula != null) {
-          b.write('<c r="$ref"$style${numeric || cell.value.isEmpty ? '' : ' t="str"'}><f>${OoxmlPackageWriter.esc(cell.formula!)}</f>'
-              '${cell.value.isEmpty ? '' : '<v>${OoxmlPackageWriter.esc(cell.value)}</v>'}</c>');
+          b.write('<c r="$ref"$style${numeric || raw.isEmpty ? '' : ' t="str"'}><f>${OoxmlPackageWriter.esc(cell.formula!)}</f>'
+              '${raw.isEmpty ? '' : '<v>${OoxmlPackageWriter.esc(raw)}</v>'}</c>');
         } else if (numeric) {
-          b.write('<c r="$ref"$style><v>${cell.value}</v></c>');
+          b.write('<c r="$ref"$style><v>$raw</v></c>');
         } else {
           b.write('<c r="$ref"$style t="inlineStr"><is><t xml:space="preserve">${OoxmlPackageWriter.esc(cell.value)}</t></is></c>');
         }
