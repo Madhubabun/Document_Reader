@@ -11,8 +11,10 @@ dependencies:
   file_picker: ^13.1.0
   flutter:
     sdk: flutter
+  image: ^4.10.1
   path: ^1.9.1
   path_provider: ^2.1.6
+  pdf: ^3.13.1
   pdfrx: ^2.6.5
   share_plus: ^13.3.1
   shared_preferences: ^2.5.5
@@ -36,6 +38,16 @@ flutter:
           weight: 600
         - asset: assets/fonts/Sora-700.ttf
           weight: 700
+    - family: Carlito
+      fonts:
+        - asset: assets/fonts/office/Carlito-normal-400.ttf
+        - asset: assets/fonts/office/Carlito-normal-700.ttf
+          weight: 700
+        - asset: assets/fonts/office/Carlito-italic-400.ttf
+          style: italic
+        - asset: assets/fonts/office/Carlito-italic-700.ttf
+          weight: 700
+          style: italic
     - family: Manrope
       fonts:
         - asset: assets/fonts/Manrope-400.ttf

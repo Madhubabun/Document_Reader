@@ -11,7 +11,13 @@ Design mockups: https://claude.ai/artifact/LdQHpG5vTupRWF8ajzsBk6
 - **Word (.docx) reader**: headings, title, bold / italic / underline / colors / highlights, lists, alignment, tables and images, with an outline to jump between headings.
 - **Excel (.xlsx) reader**: sheet tabs, grid with row and column headers, formula bar showing a cell's value or formula.
 - **PowerPoint (.pptx) reader**: slides drawn to scale with text boxes, placeholders (positions inherited from layouts and masters) and pictures, plus a full-screen swipe presenter.
-- **Convert screen**: pick a file and a target (PDF to Word/Excel/PowerPoint, and each Office format to PDF). The conversion engine itself is the next milestone.
+- **Convert**, fully on-device:
+  - Word, Excel and PowerPoint to PDF, using the document's own page or slide size and Carlito (metric-compatible with Calibri) so line breaks match Office.
+  - PDF to Word: text lines are rejoined into paragraphs, larger lines become headings, bullets become real Word bullet lists, and each PDF page starts a new Word page.
+  - PDF to Excel: one sheet per page, with text lined up into columns and plain numbers stored as numbers.
+  - PDF to PowerPoint: one slide per page, each holding a sharp picture of the page so it looks exactly like the PDF.
+  - Output is standard OOXML (.docx, .xlsx, .pptx) that opens in Microsoft 365. Scanned PDFs without text can only go to PowerPoint until OCR lands.
+- **Android preview APK**: every push builds `DocReader.apk` and publishes it on the [android-preview release](https://github.com/Madhubabun/Document_Reader/releases/tag/android-preview).
 - **Settings**: dark / light / system theme, page tone, Office compatibility notes.
 
 ## Office compatibility
@@ -44,3 +50,5 @@ Project layout:
 - `lib/screens/` - Home, Files, Convert, Settings, PDF reader, Office reader
 - `lib/widgets/` - glass panels, glowing file badges, reader bars
 - `lib/theme/` - colors and type (Sora for display, Manrope for UI)
+
+The PDF-to-Office tests need a desktop PDFium build. Download `pdfium-linux-x64.tgz` (or the macOS build) from [pdfium-binaries](https://github.com/bblanchon/pdfium-binaries/releases) and run `PDFIUM_PATH=/path/to/libpdfium.so flutter test`; without it those tests are skipped. Set `CONVERT_OUT=/some/folder` to keep the generated files for inspection.

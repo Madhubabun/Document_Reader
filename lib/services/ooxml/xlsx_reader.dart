@@ -82,7 +82,7 @@ class XlsxReader {
               value = raw ?? '';
           }
           if (value.isEmpty && (formula == null || formula.isEmpty)) continue;
-          final isNumber = (type == null || type == 'n') && raw != null;
+          final isNumber = (type == null || type == 'n') && raw != null && raw.isNotEmpty;
           cells[(parsed?.$1 ?? rowIndex, colIndex)] = XlsxCell(
             isNumber ? formatNumber(value) : value,
             formula: (formula == null || formula.isEmpty) ? null : formula,
