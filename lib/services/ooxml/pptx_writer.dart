@@ -44,10 +44,21 @@ class PptxWriter {
         shapeId++;
       }
       final bg = pres.slides[i].background;
+      final bgImage = pres.slides[i].backgroundImage;
+      var bgXml = bg == null ? '' : '<p:bg><p:bgPr><a:solidFill><a:srgbClr val="$bg"/></a:solidFill><a:effectLst/></p:bgPr></p:bg>';
+      if (bgImage != null) {
+        media++;
+        final ext = OoxmlPackageWriter.imageExtension(bgImage);
+        pkg.addBinary('ppt/media/image$media.$ext', bgImage);
+        final rid = 'rId${slideRels.length + 1}';
+        slideRels.add((rid, OoxmlPackageWriter.relType('image'), '../media/image$media.$ext'));
+        bgXml = '<p:bg><p:bgPr><a:blipFill dpi="0" rotWithShape="1"><a:blip r:embed="$rid"/><a:srcRect/><a:stretch><a:fillRect/></a:stretch></a:blipFill>'
+            '<a:effectLst/></p:bgPr></p:bg>';
+      }
       pkg.addXml(
         'ppt/slides/slide$n.xml',
         '<p:sld $_ns><p:cSld>'
-            '${bg == null ? '' : '<p:bg><p:bgPr><a:solidFill><a:srgbClr val="$bg"/></a:solidFill><a:effectLst/></p:bgPr></p:bg>'}'
+            '$bgXml'
             '<p:spTree>$_groupProps$shapes</p:spTree></p:cSld><p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr></p:sld>',
         contentType: '$_ct.slide+xml',
       );
@@ -112,7 +123,7 @@ class PptxWriter {
     final b = StringBuffer('<p:sp><p:nvSpPr><p:cNvPr id="$id" name="TextBox ${id - 1}"/><p:cNvSpPr txBox="1"/><p:nvPr/></p:nvSpPr>'
         '<p:spPr>${_xfrm(r)}<a:prstGeom prst="rect"><a:avLst/></a:prstGeom>'
         '${shape.fill == null ? '<a:noFill/>' : '<a:solidFill><a:srgbClr val="${shape.fill}"/></a:solidFill>'}</p:spPr>'
-        '<p:txBody><a:bodyPr wrap="square" rtlCol="0"><a:spAutoFit/></a:bodyPr><a:lstStyle/>');
+        '<p:txBody><a:bodyPr wrap="square" rtlCol="0" anchor="${shape.anchor}"><a:spAutoFit/></a:bodyPr><a:lstStyle/>');
     for (final p in shape.paragraphs) {
       b.write('<a:p>');
       final algn = p.align == 'l' ? '' : ' algn="${p.align}"';

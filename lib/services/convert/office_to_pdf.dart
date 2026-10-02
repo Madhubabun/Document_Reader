@@ -243,11 +243,15 @@ Future<Uint8List> pptxToPdf(PptxPresentation pres, OfficeFonts fonts) {
           padding: const pw.EdgeInsets.all(7.2),
           child: pw.FittedBox(
             fit: pw.BoxFit.scaleDown,
-            alignment: shape.kind == PptxShapeKind.title ? pw.Alignment.centerLeft : pw.Alignment.topLeft,
+            alignment: switch (shape.anchor) {
+              'ctr' => pw.Alignment.centerLeft,
+              'b' => pw.Alignment.bottomLeft,
+              _ => pw.Alignment.topLeft,
+            },
             child: pw.SizedBox(
               width: width - 14.4,
               child: pw.Column(
-                crossAxisAlignment: pw.CrossAxisAlignment.start,
+                crossAxisAlignment: pw.CrossAxisAlignment.stretch,
                 children: [
                   for (final para in shape.paragraphs)
                     pw.Padding(
@@ -291,7 +295,10 @@ Future<Uint8List> pptxToPdf(PptxPresentation pres, OfficeFonts fonts) {
       build: (_) => pw.Container(
         width: pageW,
         height: pageH,
-        color: _hex(slide.background) ?? PdfColors.white,
+        decoration: pw.BoxDecoration(
+          color: _hex(slide.background) ?? PdfColors.white,
+          image: slide.backgroundImage == null ? null : pw.DecorationImage(image: pw.MemoryImage(slide.backgroundImage!), fit: pw.BoxFit.fill),
+        ),
         child: pw.Stack(overflow: pw.Overflow.clip, children: children),
       ),
     ));

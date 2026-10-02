@@ -9,7 +9,22 @@ import '../../widgets/reader_chrome.dart';
 
 /// Office fonts first; Carlito and Liberation are metric-compatible stand-ins
 /// where Calibri/Arial/Times are not installed.
-const officeFontFallback = ['Calibri', 'Carlito', 'Arial', 'Liberation Sans', 'Helvetica'];
+/// Calibri-compatible Latin first, then bundled Indian-language scripts so
+/// Telugu, Hindi, Tamil, Kannada, Malayalam and Bengali text renders the same
+/// on every phone (fonts like Gautami or Nirmala UI only exist on Windows).
+const officeFontFallback = [
+  'Calibri',
+  'Carlito',
+  'NotoSansTelugu',
+  'NotoSansDevanagari',
+  'NotoSansTamil',
+  'NotoSansKannada',
+  'NotoSansMalayalam',
+  'NotoSansBengali',
+  'Arial',
+  'Liberation Sans',
+  'Helvetica',
+];
 
 /// Reflowed Word document on a paper-like page.
 class WordView extends StatefulWidget {

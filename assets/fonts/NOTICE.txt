@@ -3,5 +3,7 @@ Manrope - Copyright 2018 The Manrope Project Authors (https://github.com/sharand
 
 Carlito - Copyright 2010-2013 tyPoland Lukasz Dziedzic (metric-compatible with Calibri)
 
-All three fonts are licensed under the SIL Open Font License, Version 1.1
-(https://openfontlicense.org). They were downloaded from Google Fonts.
+Noto Sans Telugu, Devanagari, Tamil, Kannada, Malayalam and Bengali - Copyright 2012 Google Inc. / The Noto Project Authors (https://github.com/notofonts)
+
+All of these fonts are licensed under the SIL Open Font License, Version 1.1
+(https://openfontlicense.org). Sora, Manrope and Carlito were downloaded from Google Fonts; the Noto fonts come from the Debian fonts-noto-core package.

@@ -20,7 +20,9 @@ class PdfReaderScreen extends StatefulWidget {
 
 class _PdfReaderScreenState extends State<PdfReaderScreen> {
   final _controller = PdfViewerController();
-  late final PdfTextSearcher _searcher = PdfTextSearcher(_controller)..addListener(_onSearchChanged);
+  // Created once the viewer has loaded the document: the searcher reads the
+  // document from the controller as soon as it is constructed.
+  PdfTextSearcher? _searcher;
   final _searchField = TextEditingController();
   PdfDocument? _document;
   int _page = 1;
@@ -29,8 +31,8 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
 
   @override
   void dispose() {
-    _searcher.removeListener(_onSearchChanged);
-    _searcher.dispose();
+    _searcher?.removeListener(_onSearchChanged);
+    _searcher?.dispose();
     _searchField.dispose();
     super.dispose();
   }
@@ -116,7 +118,7 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
       _chrome = true;
       if (!_searching) {
         _searchField.clear();
-        _searcher.resetTextSearch();
+        _searcher?.resetTextSearch();
       }
     });
   }
@@ -146,8 +148,11 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
                   margin: 14,
                   boundaryMargin: const EdgeInsets.only(top: 120, bottom: 140),
                   pageDropShadow: BoxShadow(color: Colors.black.withValues(alpha: 0.5), blurRadius: 30, offset: const Offset(0, 14)),
-                  pagePaintCallbacks: [_searcher.pageTextMatchPaintCallback],
-                  onViewerReady: (document, controller) => setState(() => _document = document),
+                  pagePaintCallbacks: [(canvas, rect, page) => _searcher?.pageTextMatchPaintCallback(canvas, rect, page)],
+                  onViewerReady: (document, controller) => setState(() {
+                    _document = document;
+                    _searcher ??= PdfTextSearcher(_controller)..addListener(_onSearchChanged);
+                  }),
                   onPageChanged: (page) {
                     if (page != null) setState(() => _page = page);
                   },
@@ -182,7 +187,7 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
                     IconButton(tooltip: 'Share', onPressed: () => shareDocument(widget.file), icon: const Icon(Icons.ios_share_rounded, size: 21)),
                   ],
                 ),
-                if (_searching) _SearchBar(controller: _searchField, searcher: _searcher, onClose: _toggleSearch),
+                if (_searching && _searcher != null) _SearchBar(controller: _searchField, searcher: _searcher!, onClose: _toggleSearch),
               ],
             ),
           ),

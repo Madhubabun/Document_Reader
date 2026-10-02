@@ -38,6 +38,36 @@ flutter:
           weight: 600
         - asset: assets/fonts/Sora-700.ttf
           weight: 700
+    - family: NotoSansTelugu
+      fonts:
+        - asset: assets/fonts/indic/NotoSansTelugu-Regular.ttf
+        - asset: assets/fonts/indic/NotoSansTelugu-Bold.ttf
+          weight: 700
+    - family: NotoSansDevanagari
+      fonts:
+        - asset: assets/fonts/indic/NotoSansDevanagari-Regular.ttf
+        - asset: assets/fonts/indic/NotoSansDevanagari-Bold.ttf
+          weight: 700
+    - family: NotoSansTamil
+      fonts:
+        - asset: assets/fonts/indic/NotoSansTamil-Regular.ttf
+        - asset: assets/fonts/indic/NotoSansTamil-Bold.ttf
+          weight: 700
+    - family: NotoSansKannada
+      fonts:
+        - asset: assets/fonts/indic/NotoSansKannada-Regular.ttf
+        - asset: assets/fonts/indic/NotoSansKannada-Bold.ttf
+          weight: 700
+    - family: NotoSansMalayalam
+      fonts:
+        - asset: assets/fonts/indic/NotoSansMalayalam-Regular.ttf
+        - asset: assets/fonts/indic/NotoSansMalayalam-Bold.ttf
+          weight: 700
+    - family: NotoSansBengali
+      fonts:
+        - asset: assets/fonts/indic/NotoSansBengali-Regular.ttf
+        - asset: assets/fonts/indic/NotoSansBengali-Bold.ttf
+          weight: 700
     - family: Carlito
       fonts:
         - asset: assets/fonts/office/Carlito-normal-400.ttf
