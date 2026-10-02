@@ -61,8 +61,8 @@ class DocxEditor implements DocumentEditor {
   void checkpoint() => _pkg.checkpoint();
 
   XmlDocument get _doc => _pkg.xml(_main)!;
-  String get _stylesPart => _pkg.targetOfType(_main, '/styles') ?? 'word/styles.xml';
-  String get _numberingPart => _pkg.targetOfType(_main, '/numbering') ?? 'word/numbering.xml';
+  String get _stylesPart => _pkg.relationshipOfType(_main, '/styles') ?? 'word/styles.xml';
+  String get _numberingPart => _pkg.relationshipOfType(_main, '/numbering') ?? 'word/numbering.xml';
 
   void _reload() {
     _paragraphs.clear();
@@ -72,7 +72,7 @@ class DocxEditor implements DocumentEditor {
     _document = DocxReader.readParts(
       document: _doc,
       styles: styles,
-      rels: _pkg.targets(_main),
+      rels: _pkg.relationships(_main),
       bytes: _pkg.bytes,
       paragraphs: _paragraphs,
       tables: _tables,

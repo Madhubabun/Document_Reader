@@ -40,22 +40,37 @@ extension OoxmlElement on XmlElement {
   }
 }
 
-class OoxmlPackage {
+/// Read access to the parts of an Office package, either straight from a
+/// file ([OoxmlPackage]) or from a package being edited.
+abstract interface class PackageSource {
+  XmlDocument? xml(String name);
+  List<int>? bytes(String name);
+
+  /// Relationship id -> target path (resolved relative to [partPath]).
+  Map<String, String> relationships(String partPath);
+
+  /// Target of the first relationship whose type ends with [typeSuffix].
+  String? relationshipOfType(String partPath, String typeSuffix);
+}
+
+class OoxmlPackage implements PackageSource {
   OoxmlPackage(List<int> bytes) : _archive = ZipDecoder().decodeBytes(bytes);
 
   final Archive _archive;
 
   bool has(String name) => _archive.findFile(name) != null;
 
+  @override
   List<int>? bytes(String name) => _archive.findFile(name)?.content;
 
+  @override
   XmlDocument? xml(String name) {
     final data = bytes(name);
     if (data == null) return null;
     return XmlDocument.parse(utf8.decode(data, allowMalformed: true));
   }
 
-  /// Relationship id -> target path (resolved relative to [partPath]).
+  @override
   Map<String, String> relationships(String partPath) {
     final slash = partPath.lastIndexOf('/');
     final dir = slash < 0 ? '' : partPath.substring(0, slash);
@@ -74,6 +89,7 @@ class OoxmlPackage {
 
   /// Target of the first relationship whose type ends with [typeSuffix]
   /// (e.g. `/slideLayout`).
+  @override
   String? relationshipOfType(String partPath, String typeSuffix) {
     final slash = partPath.lastIndexOf('/');
     final dir = slash < 0 ? '' : partPath.substring(0, slash);
