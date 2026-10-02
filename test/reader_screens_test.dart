@@ -111,6 +111,101 @@ void main() {
     dir.deleteSync(recursive: true);
   }, skip: pdfium == null);
 
+  testWidgets('PDFs can be signed with a drawn signature', (tester) async {
+    Pdfrx.pdfiumModulePath = pdfium;
+    tester.view.physicalSize = const Size(1080, 2340);
+    tester.view.devicePixelRatio = 3;
+    addTearDown(tester.view.reset);
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+      const MethodChannel('plugins.flutter.io/path_provider'),
+      (call) async => Directory.systemTemp.path,
+    );
+    SharedPreferences.setMockInitialValues({});
+    final prefs = await SharedPreferences.getInstance();
+    final dir = Directory.systemTemp.createTempSync('pdf_sign');
+    final path = '${dir.path}/Contract.pdf';
+    late Uint8List original;
+    await tester.runAsync(() async {
+      final doc = pw.Document()..addPage(pw.Page(build: (_) => pw.Text('Sign below')));
+      original = await doc.save();
+      await File(path).writeAsBytes(original);
+    });
+    final library = LibraryStore(prefs, dir);
+    final file = DocFile(path: path, name: 'Contract.pdf', sizeBytes: original.length, openedAt: DateTime.now());
+    await tester.pumpWidget(AppScope(
+      library: library,
+      settings: SettingsStore(prefs),
+      child: MaterialApp(theme: AppTheme.dark(), home: PdfReaderScreen(file: file)),
+    ));
+    Future<void> settle(bool Function() done) async {
+      for (var i = 0; i < 60 && !done(); i++) {
+        await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 100)));
+        await tester.pump(const Duration(milliseconds: 50));
+      }
+    }
+
+    await settle(() => find.textContaining('of 1').evaluate().isNotEmpty);
+    await tester.tap(find.text('Sign'));
+    await settle(() => find.text('Draw a new signature').evaluate().isNotEmpty);
+    for (var i = 0; i < 10; i++) {
+      await tester.pump(const Duration(milliseconds: 100)); // sheet animation
+    }
+    await tester.tap(find.text('Draw a new signature'));
+    for (var i = 0; i < 10; i++) {
+      await tester.pump(const Duration(milliseconds: 100)); // page transition
+    }
+
+    // Draw a short zigzag and save it.
+    final pad = tester.getCenter(find.byKey(const Key('signature-pad')));
+    final gesture = await tester.startGesture(pad - const Offset(120, 0));
+    for (var i = 1; i <= 12; i++) {
+      await gesture.moveBy(Offset(20, i.isEven ? 30 : -30));
+    }
+    await gesture.up();
+    await tester.pump();
+    await tester.tap(find.text('Save'));
+    await settle(() => find.byKey(const Key('signature-box')).evaluate().isNotEmpty);
+    expect(find.byKey(const Key('signature-box')), findsOneWidget);
+    await tester.pump(const Duration(milliseconds: 500));
+
+    // Move it left and make it bigger.
+    final before = tester.getRect(find.byKey(const Key('signature-box')));
+    await tester.drag(find.byKey(const Key('signature-box')), const Offset(-60, 40));
+    await tester.drag(find.byKey(const Key('signature-resize')), const Offset(40, 0));
+    await tester.pump();
+    final after = tester.getRect(find.byKey(const Key('signature-box')));
+    expect(after.left, closeTo(before.left - 60, 1));
+    expect(after.top, closeTo(before.top + 40, 1));
+    expect(after.width, closeTo(before.width + 40, 1));
+
+    await tester.tap(find.byKey(const Key('apply-signature')));
+    await settle(() => find.textContaining('Signed and saved').evaluate().isNotEmpty);
+    expect(find.textContaining('Signed and saved'), findsOneWidget);
+    expect(find.byKey(const Key('signature-box')), findsNothing);
+
+    await tester.runAsync(() async {
+      final signed = await File(path).readAsBytes();
+      expect(signed.length, greaterThan(original.length));
+      expect(await library.versionsOf(file), hasLength(1));
+      expect(await library.signatures.list(), hasLength(1));
+      // The ink shows up on the page.
+      final doc = await PdfDocument.openData(signed);
+      final page = doc.pages.first;
+      final image = (await page.render(fullWidth: 300, fullHeight: 300 * page.height / page.width, backgroundColor: 0xFFFFFFFF))!;
+      var dark = 0;
+      for (var i = 0; i < image.pixels.length; i += 4) {
+        if (image.pixels[i] < 80 && image.pixels[i + 1] < 80 && image.pixels[i + 2] < 80) dark++;
+      }
+      image.dispose();
+      await doc.dispose();
+      // Unsigned, the page only has a few dark pixels of text.
+      expect(dark, greaterThan(150));
+    });
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump(const Duration(seconds: 5));
+    dir.deleteSync(recursive: true);
+  }, skip: pdfium == null);
+
   testWidgets('Excel cells can be edited, zoomed and are saved with a backup', (tester) async {
     SharedPreferences.setMockInitialValues({});
     final prefs = await SharedPreferences.getInstance();
