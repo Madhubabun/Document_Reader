@@ -1,8 +1,11 @@
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
 
 import '../app_scope.dart';
 import '../models/doc_file.dart';
 import '../services/document_actions.dart';
+import '../services/error_text.dart';
 import '../services/library_store.dart';
 import '../services/new_documents.dart';
 import '../services/scanner.dart';
@@ -69,19 +72,27 @@ Future<void> showCreateSheet(BuildContext context) async {
   if (picked != null && context.mounted) picked();
 }
 
+bool _scanning = false;
+
 /// Scans pages with the camera and opens them ready to become a PDF.
 Future<void> startScan(BuildContext context) async {
+  // A second tap while the scanner opens would start another.
+  if (_scanning) return;
   final messenger = ScaffoldMessenger.of(context);
   final navigator = Navigator.of(context);
+  List<Uint8List>? pages;
+  _scanning = true;
   try {
-    final pages = await scanPages();
-    if (pages == null || pages.isEmpty) return;
-    await navigator.push(MaterialPageRoute<void>(builder: (_) => ImagesToPdfScreen(initial: pages, scanned: true)));
+    pages = await scanPages();
   } on ScanUnavailable catch (e) {
     messenger.showSnackBar(SnackBar(content: Text(e.message)));
   } catch (e) {
-    messenger.showSnackBar(SnackBar(content: Text('The scan did not work: $e')));
+    messenger.showSnackBar(SnackBar(content: Text('The scan did not work. ${errorText(e)}')));
+  } finally {
+    _scanning = false;
   }
+  if (pages == null || pages.isEmpty) return;
+  await navigator.push(MaterialPageRoute<void>(builder: (_) => ImagesToPdfScreen(initial: pages!, scanned: true)));
 }
 
 /// Lists the templates for [kind]; picking one creates the file.
@@ -134,7 +145,7 @@ Future<DocFile?> createFromTemplate(BuildContext context, NewTemplate template) 
           NewKind.pdf => 'Blank',
         }
       : template.name;
-  final typed = await showTextDialog(context, title: 'Name your ${template.kind.label.toLowerCase()}', initial: fallback, fieldKey: const Key('new-name'));
+  final typed = await showTextDialog(context, title: 'Name your ${template.kind.label}', initial: fallback, fieldKey: const Key('new-name'));
   if (typed == null) return null;
   final name = safeBaseName(typed, fallback: fallback, extension: template.kind.extension);
   try {
@@ -149,7 +160,7 @@ Future<DocFile?> createFromTemplate(BuildContext context, NewTemplate template) 
     ));
     return file;
   } catch (e) {
-    messenger.showSnackBar(SnackBar(content: Text('Could not create the file: $e')));
+    messenger.showSnackBar(SnackBar(content: Text('Could not create the file. ${errorText(e)}')));
     return null;
   }
 }

@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import 'package:share_plus/share_plus.dart';
 
 import '../app_scope.dart';
+import '../services/error_text.dart';
 import '../services/library_store.dart';
 import '../services/ocr.dart';
 import '../services/ooxml/docx_reader.dart';
@@ -29,6 +30,8 @@ class _TextFromImageScreenState extends State<TextFromImageScreen> {
   final _text = TextEditingController();
   final _reader = TextReader();
   bool _busy = false;
+  bool _picking = false;
+  bool _saving = false;
   String? _status;
 
   @override
@@ -45,25 +48,39 @@ class _TextFromImageScreenState extends State<TextFromImageScreen> {
   }
 
   Future<void> _fromGallery() async {
+    if (_picking || _busy) return;
     final messenger = ScaffoldMessenger.of(context);
+    List<Uint8List> pictures;
+    setState(() => _picking = true);
     try {
       final picked = await FilePicker.pickFiles(type: FileType.image);
-      if (picked.isEmpty) return;
-      await _read([for (final f in picked) await f.readAsBytes()]);
+      pictures = [for (final f in picked) await f.readAsBytes()];
     } catch (e) {
-      messenger.showSnackBar(SnackBar(content: Text('Could not open the pictures: $e')));
+      if (mounted) messenger.showSnackBar(SnackBar(content: Text('Could not open the pictures. ${errorText(e)}')));
+      return;
+    } finally {
+      if (mounted) setState(() => _picking = false);
     }
+    if (pictures.isNotEmpty) await _read(pictures);
   }
 
   Future<void> _fromScan() async {
+    if (_picking || _busy) return;
     final messenger = ScaffoldMessenger.of(context);
+    List<Uint8List>? pages;
+    setState(() => _picking = true);
     try {
-      final pages = await scanPages();
-      if (pages == null || pages.isEmpty) return;
-      await _read(pages);
+      pages = await scanPages();
     } on ScanUnavailable catch (e) {
-      messenger.showSnackBar(SnackBar(content: Text(e.message)));
+      if (mounted) messenger.showSnackBar(SnackBar(content: Text(e.message)));
+      return;
+    } catch (e) {
+      if (mounted) messenger.showSnackBar(SnackBar(content: Text('The scan did not work. ${errorText(e)}')));
+      return;
+    } finally {
+      if (mounted) setState(() => _picking = false);
     }
+    if (pages != null && pages.isNotEmpty) await _read(pages);
   }
 
   Future<void> _read(List<Uint8List> pictures) async {
@@ -86,9 +103,10 @@ class _TextFromImageScreenState extends State<TextFromImageScreen> {
       final before = _text.text.trim();
       _text.text = [if (before.isNotEmpty) before, ...parts].join('\n\n');
     } on OcrUnavailable catch (e) {
-      messenger.showSnackBar(SnackBar(content: Text(e.message)));
+      if (mounted) messenger.showSnackBar(SnackBar(content: Text(e.message)));
     } catch (e) {
-      messenger.showSnackBar(SnackBar(content: Text('The text could not be read: $e')));
+      // Leaving the screen closes the reader, which stops the read.
+      if (mounted) messenger.showSnackBar(SnackBar(content: Text('The text could not be read. ${errorText(e)}')));
     } finally {
       if (mounted) {
         setState(() {
@@ -107,11 +125,13 @@ class _TextFromImageScreenState extends State<TextFromImageScreen> {
   Future<void> _share() => SharePlus.instance.share(ShareParams(text: _text.text));
 
   Future<void> _saveAsWord() async {
+    if (_saving) return;
     final library = AppScope.of(context).library;
     final navigator = Navigator.of(context);
     final messenger = ScaffoldMessenger.of(context);
     final firstLine = _text.text.trim().split('\n').first;
     final name = safeBaseName(firstLine.length > 40 ? firstLine.substring(0, 40) : firstLine, fallback: 'Scanned text');
+    setState(() => _saving = true);
     try {
       final paragraphs = _text.text.trim().split(RegExp(r'\n\s*\n'));
       final bytes = DocxWriter.write(
@@ -122,7 +142,9 @@ class _TextFromImageScreenState extends State<TextFromImageScreen> {
       if (!mounted) return;
       await navigator.push(MaterialPageRoute<void>(builder: (_) => OfficeReaderScreen(file: file, startEditing: true)));
     } catch (e) {
-      messenger.showSnackBar(SnackBar(content: Text('Could not save: $e')));
+      if (mounted) messenger.showSnackBar(SnackBar(content: Text('Could not save. ${errorText(e)}')));
+    } finally {
+      if (mounted) setState(() => _saving = false);
     }
   }
 
@@ -139,8 +161,8 @@ class _TextFromImageScreenState extends State<TextFromImageScreen> {
             backgroundColor: Colors.transparent,
             title: const Text('Text from pictures'),
             actions: [
-              IconButton(tooltip: 'Scan with the camera', onPressed: _busy ? null : _fromScan, icon: const Icon(Icons.document_scanner_outlined)),
-              IconButton(tooltip: 'Pick pictures', onPressed: _busy ? null : _fromGallery, icon: const Icon(Icons.add_photo_alternate_outlined)),
+              IconButton(tooltip: 'Scan with the camera', onPressed: _busy || _picking ? null : _fromScan, icon: const Icon(Icons.document_scanner_outlined)),
+              IconButton(tooltip: 'Pick pictures', onPressed: _busy || _picking ? null : _fromGallery, icon: const Icon(Icons.add_photo_alternate_outlined)),
             ],
           ),
           body: SafeArea(
@@ -184,7 +206,7 @@ class _TextFromImageScreenState extends State<TextFromImageScreen> {
                       Expanded(
                         child: FilledButton.icon(
                           key: const Key('ocr-word'),
-                          onPressed: hasText ? _saveAsWord : null,
+                          onPressed: hasText && !_saving ? _saveAsWord : null,
                           icon: const Icon(Icons.description_outlined),
                           label: const Text('Word'),
                         ),

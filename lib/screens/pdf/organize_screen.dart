@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:pdfrx/pdfrx.dart';
 
 import '../../models/doc_file.dart';
+import '../../services/error_text.dart';
 import '../../services/pdf_tools.dart';
 import '../../theme/app_theme.dart';
 import '../../widgets/glass.dart';
@@ -99,7 +100,7 @@ class _OrganizeScreenState extends State<OrganizeScreen> {
         body: SafeArea(
           top: false,
           child: _error != null
-              ? Center(child: Padding(padding: const EdgeInsets.all(24), child: Text('This PDF could not be opened.\n$_error', textAlign: TextAlign.center)))
+              ? Center(child: Padding(padding: const EdgeInsets.all(24), child: Text('This PDF could not be opened.\n${errorText(_error!)}', textAlign: TextAlign.center)))
               : doc == null
                   ? const Center(child: CircularProgressIndicator())
                   : Column(

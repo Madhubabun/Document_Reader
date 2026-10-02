@@ -4,6 +4,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 
 import '../app_scope.dart';
+import '../services/error_text.dart';
 import '../services/images_to_pdf.dart';
 import '../services/library_store.dart';
 import '../theme/app_theme.dart';
@@ -20,6 +21,15 @@ class ImagesToPdfScreen extends StatefulWidget {
   /// Scans are already cropped to the page, so they default to pages shaped
   /// like the scan, with no margins.
   final bool scanned;
+
+  /// Adds [pictures] to the open screen, when it is the one showing.
+  /// Returns false when there is none.
+  static bool addToOpen(List<Uint8List> pictures) {
+    final open = _ImagesToPdfScreenState._showing;
+    if (open == null || !open.mounted || open._busy || !(ModalRoute.of(open.context)?.isCurrent ?? false)) return false;
+    open._append([for (final bytes in pictures) _Item(PageImage(bytes))]);
+    return true;
+  }
 
   @override
   State<ImagesToPdfScreen> createState() => _ImagesToPdfScreenState();
@@ -44,32 +54,42 @@ class _ImagesToPdfScreenState extends State<ImagesToPdfScreen> {
   late bool _margins = !widget.scanned;
   bool _smaller = false;
   bool _busy = false;
+  bool _picking = false;
   late final _name = TextEditingController(text: '${widget.scanned ? 'Scan' : 'Photos'} ${_stamp(DateTime.now())}');
+
+  static _ImagesToPdfScreenState? _showing;
 
   @override
   void initState() {
     super.initState();
+    _showing = this;
     if (_items.isEmpty) WidgetsBinding.instance.addPostFrameCallback((_) => _add());
   }
 
   @override
   void dispose() {
+    if (_showing == this) _showing = null;
     _name.dispose();
     super.dispose();
   }
 
+  void _append(List<_Item> added) => setState(() => _items.addAll(added));
+
   Future<void> _add() async {
+    if (_picking || _busy) return;
     final messenger = ScaffoldMessenger.of(context);
+    setState(() => _picking = true);
     try {
       final picked = await FilePicker.pickFiles(type: FileType.image);
       final added = <_Item>[];
       for (final file in picked) {
         added.add(_Item(PageImage(await file.readAsBytes())));
       }
-      if (!mounted) return;
-      setState(() => _items.addAll(added));
+      if (mounted) _append(added);
     } catch (e) {
-      messenger.showSnackBar(SnackBar(content: Text('Could not open your pictures: $e')));
+      if (mounted) messenger.showSnackBar(SnackBar(content: Text('Could not open your pictures. ${errorText(e)}')));
+    } finally {
+      if (mounted) setState(() => _picking = false);
     }
   }
 
@@ -86,7 +106,7 @@ class _ImagesToPdfScreenState extends State<ImagesToPdfScreen> {
       if (!mounted) return;
       navigator.pushReplacement(MaterialPageRoute<void>(builder: (_) => PdfReaderScreen(file: saved)));
     } catch (e) {
-      messenger.showSnackBar(SnackBar(content: Text('Could not make the PDF: $e')));
+      messenger.showSnackBar(SnackBar(content: Text('Could not make the PDF. ${errorText(e)}')));
       if (mounted) setState(() => _busy = false);
     }
   }
@@ -100,7 +120,7 @@ class _ImagesToPdfScreenState extends State<ImagesToPdfScreen> {
         backgroundColor: Colors.transparent,
         title: Text(widget.scanned ? 'Scanned pages' : 'Pictures to PDF'),
         actions: [
-          IconButton(tooltip: 'Add pictures', onPressed: _busy ? null : _add, icon: const Icon(Icons.add_photo_alternate_outlined)),
+          IconButton(tooltip: 'Add pictures', onPressed: _busy || _picking ? null : _add, icon: const Icon(Icons.add_photo_alternate_outlined)),
         ],
       ),
       body: SafeArea(
@@ -129,7 +149,7 @@ class _ImagesToPdfScreenState extends State<ImagesToPdfScreen> {
                             const SizedBox(height: 10),
                             Text('Add the pictures you want in the PDF.', style: TextStyle(color: p.textMuted)),
                             const SizedBox(height: 14),
-                            OutlinedButton.icon(onPressed: _add, icon: const Icon(Icons.add_rounded), label: const Text('Add pictures')),
+                            OutlinedButton.icon(onPressed: _picking ? null : _add, icon: const Icon(Icons.add_rounded), label: const Text('Add pictures')),
                           ],
                         ),
                       )

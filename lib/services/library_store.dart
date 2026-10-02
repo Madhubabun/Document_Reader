@@ -169,6 +169,18 @@ String safeBaseName(String raw, {required String fallback, String? extension}) {
   if (extension != null) name = name.replaceAll(RegExp('\\.${RegExp.escape(extension)}\$', caseSensitive: false), '');
   // Leading dots would hide the file.
   name = name.replaceFirst(RegExp(r'^[.\s]+'), '').trim();
-  if (name.length > 120) name = name.substring(0, 120).trim();
+  // File names are limited to 255 bytes; leave room for " (2)" and the
+  // extension. Cut between characters, never inside one.
+  if (utf8.encode(name).length > 180) {
+    final kept = StringBuffer();
+    var bytes = 0;
+    for (final rune in name.runes) {
+      final char = String.fromCharCode(rune);
+      bytes += utf8.encode(char).length;
+      if (bytes > 180) break;
+      kept.write(char);
+    }
+    name = kept.toString().trim();
+  }
   return name.isEmpty ? fallback : name;
 }

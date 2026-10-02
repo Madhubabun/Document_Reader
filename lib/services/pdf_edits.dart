@@ -214,6 +214,8 @@ typedef _ApplyMessage = ({Uint8List pdf, List<PdfEdit> edits, String? password, 
         session.close();
       }
     });
+  } on StateError catch (e) {
+    return (bytes: null, error: e.message);
   } catch (e) {
     return (bytes: null, error: '$e');
   }
@@ -286,6 +288,8 @@ typedef _ReadMessage = ({Uint8List pdf, String? password, String? modulePath});
         session.close();
       }
     });
+  } on StateError catch (e) {
+    return (fields: null, error: e.message);
   } catch (e) {
     return (fields: null, error: '$e');
   }
@@ -320,6 +324,12 @@ void _fillField(PdfiumSession s, FPDF_PAGE page, FieldEdit e) {
       }
     } else if (e.option != null && (type == FPDF_FORMFIELD_COMBOBOX || type == FPDF_FORMFIELD_LISTBOX)) {
       if (pdfium.FORM_SetFocusedAnnot(s.form, annot) == 0) throw StateError('A choice field could not be filled in.');
+      // In a list that allows several choices, picking adds to what is
+      // selected, so clear the others first.
+      final count = pdfium.FPDFAnnot_GetOptionCount(s.form, annot);
+      for (var i = 0; i < count; i++) {
+        if (i != e.option && pdfium.FPDFAnnot_IsOptionSelected(s.form, annot, i) != 0) pdfium.FORM_SetIndexSelected(s.form, page, i, 0);
+      }
       pdfium.FORM_SetIndexSelected(s.form, page, e.option!, 1);
       pdfium.FORM_ForceToKillFocus(s.form);
     }

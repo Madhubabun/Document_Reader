@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 
 import '../../app_scope.dart';
 import '../../models/doc_file.dart';
+import '../../services/error_text.dart';
 import '../../services/library_store.dart';
 import '../../services/ocr.dart';
 import '../../services/pdf_edits.dart';
@@ -18,11 +19,11 @@ import 'organize_screen.dart';
 Future<T> runWithProgress<T>(BuildContext context, String label, Future<T> Function(ValueSetter<String> update) work) async {
   final text = ValueNotifier(label);
   final navigator = Navigator.of(context, rootNavigator: true);
-  var open = true;
-  showDialog<void>(
+  // Kept so the spinner, and only the spinner, is closed afterwards, even
+  // if another screen opened on top of it meanwhile.
+  final route = DialogRoute<void>(
     context: context,
     barrierDismissible: false,
-    useRootNavigator: true,
     builder: (_) => PopScope(
       canPop: false,
       child: AlertDialog(
@@ -35,11 +36,12 @@ Future<T> runWithProgress<T>(BuildContext context, String label, Future<T> Funct
         ),
       ),
     ),
-  ).whenComplete(() => open = false);
+  );
+  navigator.push(route);
   try {
     return await work((v) => text.value = v);
   } finally {
-    if (open) navigator.pop();
+    if (route.isActive) navigator.removeRoute(route);
     // Let the dialog finish closing before the notifier goes.
     WidgetsBinding.instance.addPostFrameCallback((_) => text.dispose());
   }
@@ -144,7 +146,7 @@ Future<PdfSource?> openSource(BuildContext context, DocFile file, {String? known
   try {
     return await _openSource(context, file, known);
   } catch (e) {
-    _say(messenger, '${file.name} could not be opened: ${_reason(e)}');
+    _say(messenger, '${file.name} could not be opened. ${_reason(e)}');
     return null;
   }
 }
@@ -163,13 +165,7 @@ Future<PdfSource?> _openSource(BuildContext context, DocFile file, String? known
   }
 }
 
-String _reason(Object e) => switch (e) {
-      PdfToolError(:final message) => message,
-      OcrUnavailable(:final message) => message,
-      StateError(:final message) => message,
-      FileSystemException() => 'the file is missing or unreadable.',
-      _ => '$e',
-    };
+String _reason(Object e) => errorText(e);
 
 void _say(ScaffoldMessengerState messenger, String text) => messenger.showSnackBar(SnackBar(content: Text(text)));
 
@@ -199,7 +195,7 @@ Future<ToolChange?> organizeFile(BuildContext context, DocFile file, {String? pa
     _say(messenger, 'Pages saved. The previous version is kept as a backup.');
     return (file: updated, password: source.password);
   } catch (e) {
-    _say(messenger, 'Could not save the pages: ${_reason(e)}');
+    _say(messenger, 'Could not save the pages. ${_reason(e)}');
     return null;
   }
 }
@@ -224,7 +220,7 @@ Future<ToolChange?> lockFile(BuildContext context, DocFile file, {String? passwo
     _say(messenger, 'Locked with AES-256. It opens in any PDF app with the password.');
     return (file: updated, password: newPassword);
   } catch (e) {
-    _say(messenger, 'Could not lock the PDF: ${_reason(e)}');
+    _say(messenger, 'Could not lock the PDF. ${_reason(e)}');
     return null;
   }
 }
@@ -233,9 +229,13 @@ Future<ToolChange?> lockFile(BuildContext context, DocFile file, {String? passwo
 Future<ToolChange?> unlockFile(BuildContext context, DocFile file, {String? password}) async {
   final library = AppScope.of(context).library;
   final messenger = ScaffoldMessenger.of(context);
-  final bytes = await File(file.path).readAsBytes();
-  if (!await needsPassword(bytes)) {
-    _say(messenger, 'This PDF has no password.');
+  try {
+    if (!await needsPassword(await File(file.path).readAsBytes())) {
+      _say(messenger, 'This PDF has no password.');
+      return null;
+    }
+  } catch (e) {
+    _say(messenger, 'Could not open the PDF. ${_reason(e)}');
     return null;
   }
   if (!context.mounted) return null;
@@ -246,7 +246,7 @@ Future<ToolChange?> unlockFile(BuildContext context, DocFile file, {String? pass
     _say(messenger, 'Password removed. The locked version is kept as a backup.');
     return (file: updated, password: null);
   } catch (e) {
-    _say(messenger, 'Could not remove the password: ${_reason(e)}');
+    _say(messenger, 'Could not remove the password. ${_reason(e)}');
     return null;
   }
 }
@@ -278,7 +278,7 @@ Future<ToolChange?> makeSearchable(BuildContext context, DocFile file, {String? 
     _say(messenger, 'Text added to ${edits.length} ${edits.length == 1 ? 'page' : 'pages'}. You can now search and copy it.');
     return (file: updated, password: source.password);
   } catch (e) {
-    _say(messenger, 'Could not read the text: ${_reason(e)}');
+    _say(messenger, 'Could not read the text. ${_reason(e)}');
     return null;
   } finally {
     await reader.close();
@@ -335,7 +335,7 @@ Future<ToolChange?> compressFile(BuildContext context, DocFile file, {String? pa
     _say(messenger, '${formatSize(source.bytes.length)} → ${formatSize(result.bytes.length)}. Saved as ${saved.name}.');
     return (file: saved, password: source.password);
   } catch (e) {
-    _say(messenger, 'Could not make it smaller: ${_reason(e)}');
+    _say(messenger, 'Could not make it smaller. ${_reason(e)}');
     return null;
   }
 }
@@ -369,10 +369,13 @@ Future<List<DocFile>> splitFile(BuildContext context, DocFile file, {String? pas
   final int count;
   try {
     final doc = await openPdfData(source.bytes, source.password);
-    count = doc.pages.length;
-    await doc.dispose();
+    try {
+      count = doc.pages.length;
+    } finally {
+      await doc.dispose();
+    }
   } catch (e) {
-    _say(messenger, 'Could not open the PDF: ${_reason(e)}');
+    _say(messenger, 'Could not open the PDF. ${_reason(e)}');
     return const [];
   }
   if (!context.mounted) return const [];
@@ -396,7 +399,7 @@ Future<List<DocFile>> splitFile(BuildContext context, DocFile file, {String? pas
     _say(messenger, 'Saved ${files.length} PDFs to your files${source.password == null ? '' : ' (without the password)'}.');
     return files;
   } catch (e) {
-    _say(messenger, 'Could not split the PDF: ${_reason(e)}');
+    _say(messenger, 'Could not split the PDF. ${_reason(e)}');
     return const [];
   }
 }
@@ -582,10 +585,11 @@ Future<DocFile?> mergeFiles(BuildContext context, List<DocFile> files) async {
   final name = safeBaseName('${_base(files.first)} (merged)', fallback: 'Merged');
   try {
     final merged = await runWithProgress(context, 'Merging ${files.length} PDFs…', (_) async => library.importBytes('$name.pdf', await mergePdfs(sources)));
-    _say(messenger, 'Merged into ${merged.name}.');
+    final locked = sources.any((s) => s.password != null);
+    _say(messenger, 'Merged into ${merged.name}${locked ? ' (without the passwords)' : ''}.');
     return merged;
   } catch (e) {
-    _say(messenger, 'Could not merge: ${_reason(e)}');
+    _say(messenger, 'Could not merge. ${_reason(e)}');
     return null;
   }
 }

@@ -166,7 +166,22 @@ void main() {
     final small = await imagesToPdf([PageImage(Uint8List.fromList(img.encodeJpg(img.Image(width: 300, height: 200), quality: 50)))]);
     final same = await compressPdf(PdfSource(small), CompressLevel.strong);
     expect(same.imagesChanged, 0);
-    expect(same.bytes, same.bytes);
+    expect(same.bytes, small);
+
+    // One picture shown on several pages, like a letterhead, is stored once
+    // and shrunk once; the first page shows it big, the others small.
+    final shared = pw.MemoryImage(img.encodePng(img.copyResize(photo, width: 1200)));
+    final letters = pw.Document();
+    letters.addPage(pw.Page(pageFormat: gen.PdfPageFormat.a4, build: (_) => pw.Image(shared)));
+    for (var n = 2; n <= 3; n++) {
+      letters.addPage(pw.Page(pageFormat: gen.PdfPageFormat.a4, build: (_) => pw.Column(children: [pw.Image(shared, width: 120), pw.Text('Letter $n')])));
+    }
+    final lettersPdf = await letters.save();
+    final smaller = await compressPdf(PdfSource(lettersPdf), CompressLevel.balanced);
+    expect(smaller.imagesChanged, greaterThan(0));
+    expect(smaller.pagesSkipped, 0);
+    expect(smaller.bytes.length, lessThan(lettersPdf.length ~/ 3));
+    expect(await textOf(smaller.bytes, 3), contains('Letter 3'));
   }, skip: skip, timeout: const Timeout(Duration(minutes: 3)));
 }
 

@@ -161,7 +161,13 @@ Future<CompressResult> compressPdf(PdfSource source, CompressLevel level) async 
 /// [source]: drawn small, any area whose colour moved a lot counts.
 Future<Set<int>> _pagesThatDiffer(PdfSource source, Uint8List after, List<int> pages) async {
   final a = await openPdfData(source.bytes, source.password);
-  final b = await openPdfData(after, source.password);
+  final PdfDocument b;
+  try {
+    b = await openPdfData(after, source.password);
+  } catch (_) {
+    await a.dispose();
+    rethrow;
+  }
   try {
     final bad = <int>{};
     for (final n in pages) {
@@ -237,6 +243,7 @@ class _NewDocument {
   final FPDF_DOCUMENT doc;
 
   void importPages(FPDF_DOCUMENT source, List<int> zeroBasedPages) {
+    if (zeroBasedPages.isEmpty) return;
     final indices = arena<Int>(zeroBasedPages.length);
     for (var i = 0; i < zeroBasedPages.length; i++) {
       indices[i] = zeroBasedPages[i];
@@ -385,6 +392,7 @@ typedef _CompressMessage = ({Uint8List pdf, String? password, int dpi, int quali
         final doc = session.doc;
         var changed = 0;
         final changedPages = <int>[];
+        final shrunk = <(int, int, int)>{};
         final count = pdfium.FPDF_GetPageCount(doc);
         for (var n = 1; n <= count; n++) {
           if (m.skip.contains(n)) continue;
@@ -396,7 +404,10 @@ typedef _CompressMessage = ({Uint8List pdf, String? password, int dpi, int quali
             for (var i = 0; i < objects; i++) {
               final object = pdfium.FPDFPage_GetObject(page, i);
               if (pdfium.FPDFPageObj_GetType(object) != _imageObject) continue;
-              if (_shrinkImage(pdfium, doc, page, object, m.dpi, m.quality, arena)) pageChanged++;
+              if (_shrinkImage(pdfium, doc, page, object, m.dpi, m.quality, arena)) {
+                pageChanged++;
+                shrunk.add(_fingerprint(pdfium, page, object, arena));
+              }
             }
             if (pageChanged > 0) {
               if (pdfium.FPDFPage_GenerateContent(page) == 0) throw PdfToolError('Page $n could not be updated.');
@@ -407,12 +418,48 @@ typedef _CompressMessage = ({Uint8List pdf, String? password, int dpi, int quali
             pdfium.FPDF_ClosePage(page);
           }
         }
+        // PDFium shares a picture used on several pages, so the other pages
+        // already show the new copy but still point at the old one in the
+        // file. Rewrite them too, or the file keeps the old, large copy.
+        if (shrunk.isNotEmpty) {
+          for (var n = 1; n <= count; n++) {
+            if (m.skip.contains(n) || changedPages.contains(n)) continue;
+            final page = pdfium.FPDF_LoadPage(doc, n - 1);
+            if (page == nullptr) continue;
+            try {
+              var shared = false;
+              final objects = pdfium.FPDFPage_CountObjects(page);
+              for (var i = 0; i < objects; i++) {
+                final object = pdfium.FPDFPage_GetObject(page, i);
+                if (pdfium.FPDFPageObj_GetType(object) != _imageObject || !shrunk.contains(_fingerprint(pdfium, page, object, arena))) continue;
+                // Moving it by nothing marks it as changed, so the page's
+                // content is written again.
+                pdfium.FPDFPageObj_Transform(object, 1, 0, 0, 1, 0, 0);
+                shared = true;
+              }
+              if (!shared) continue;
+              if (pdfium.FPDFPage_GenerateContent(page) == 0) throw PdfToolError('Page $n could not be updated.');
+              changedPages.add(n);
+            } finally {
+              pdfium.FPDF_ClosePage(page);
+            }
+          }
+          changedPages.sort();
+        }
         final bytes = changed == 0 ? m.pdf : session.save(incremental: false);
         return <Object>[bytes, changed, changedPages];
       } finally {
         session.close();
       }
     });
+
+/// Width, height and stored size of a picture: enough to recognise one
+/// this tool made.
+(int, int, int) _fingerprint(PDFium pdfium, FPDF_PAGE page, FPDF_PAGEOBJECT object, Arena arena) {
+  final meta = arena<FPDF_IMAGEOBJ_METADATA>();
+  if (pdfium.FPDFImageObj_GetImageMetadata(object, page, meta) == 0) return (-1, -1, -1);
+  return (meta.ref.width, meta.ref.height, pdfium.FPDFImageObj_GetImageDataRaw(object, nullptr, 0));
+}
 
 /// Re-encodes one picture as a smaller JPEG when that saves space. Leaves
 /// see-through pictures, black-and-white scans and small pictures alone.

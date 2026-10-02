@@ -58,6 +58,9 @@ Future<Uint8List> preparePicture(Uint8List bytes, {bool smaller = false}) async 
       var width = descriptor.width;
       var height = descriptor.height;
       final long = math.max(width, height);
+      // A JPEG already small enough is kept: encoding it again only loses
+      // quality.
+      if (isJpeg(bytes) && long <= smallerLongEdge) return bytes;
       if (smaller && long > smallerLongEdge) {
         width = (width * smallerLongEdge / long).round();
         height = (height * smallerLongEdge / long).round();
@@ -70,8 +73,9 @@ Future<Uint8List> preparePicture(Uint8List bytes, {bool smaller = false}) async 
           final rgba = await image.toByteData(format: ui.ImageByteFormat.rawStraightRgba);
           if (rgba == null) throw StateError('A picture could not be read.');
           final encoded = await compute(_encodeJpeg, (rgba: rgba.buffer.asUint8List(), width: image.width, height: image.height));
-          // A small PNG (a screenshot, say) can be smaller than its JPEG.
-          if (isPng(bytes) && bytes.length <= encoded.length) return bytes;
+          // A small PNG (a screenshot, say), or a well-compressed JPEG, can
+          // be smaller than the new JPEG.
+          if ((isPng(bytes) || isJpeg(bytes)) && bytes.length <= encoded.length) return bytes;
           return encoded;
         } finally {
           image.dispose();

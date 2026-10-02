@@ -9,6 +9,7 @@ import 'package:pdfrx/pdfrx.dart';
 import '../app_scope.dart';
 import '../models/doc_file.dart';
 import '../services/document_actions.dart';
+import '../services/error_text.dart';
 import '../services/pdf_edits.dart';
 import '../services/signature_store.dart';
 import '../theme/app_theme.dart';
@@ -243,13 +244,13 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
       _form = FormController(fields);
       _enter(_Mode.form);
     } catch (e) {
-      messenger.showSnackBar(_snack('Could not read the form: ${_reason(e)}'));
+      messenger.showSnackBar(_snack('Could not read the form. ${_reason(e)}'));
     } finally {
       if (mounted) setState(() => _busy = false);
     }
   }
 
-  static String _reason(Object e) => e is StateError ? e.message : '$e';
+  static String _reason(Object e) => errorText(e);
 
   bool get _hasUnsaved => switch (_mode) {
         _Mode.view => false,
@@ -402,15 +403,18 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
       });
       messenger.showSnackBar(_snack(done));
     } catch (e) {
-      messenger.showSnackBar(_snack('$failed: ${_reason(e)}'));
+      messenger.showSnackBar(_snack('$failed. ${_reason(e)}'));
     } finally {
       if (mounted) setState(() => _busy = false);
     }
   }
 
-  /// Reopens the viewer on a file a tool replaced.
-  void _reloadWith(ToolChange? change) {
+  /// Reopens the viewer on a file a tool replaced. Stays on the same page
+  /// unless the pages themselves changed.
+  void _reloadWith(ToolChange? change, {bool pagesChanged = false}) {
     if (change == null || !mounted) return;
+    if (_mode != _Mode.view) _leaveMode();
+    _searchField.clear();
     _searcher?.removeListener(_onSearchChanged);
     _searcher?.dispose();
     setState(() {
@@ -420,7 +424,7 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
       _searcher = null;
       _searching = false;
       _document = null;
-      _page = 1;
+      if (pagesChanged) _page = 1;
       _revision++;
     });
   }
@@ -442,7 +446,7 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
             children: [
               Text('PDF tools', style: Theme.of(sheet).textTheme.titleLarge),
               const SizedBox(height: 6),
-              row('Organize pages', Icons.view_agenda_outlined, const Key('menu-organize'), () async => _reloadWith(await organizeFile(context, _file, password: _password))),
+              row('Organize pages', Icons.view_agenda_outlined, const Key('menu-organize'), () async => _reloadWith(await organizeFile(context, _file, password: _password), pagesChanged: true)),
               row('Split into files', Icons.call_split_rounded, const Key('menu-split'), () => splitFile(context, _file, password: _password)),
               row('Make a smaller copy', Icons.compress_rounded, const Key('menu-compress'), () => compressFile(context, _file, password: _password)),
               row('Make scanned text searchable', Icons.manage_search_rounded, const Key('menu-searchable'),
@@ -456,7 +460,14 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
         ),
       );
     });
-    if (picked != null && mounted) await picked();
+    if (picked == null || !mounted) return;
+    // Keeps the other tools closed while this one runs.
+    setState(() => _busy = true);
+    try {
+      await picked();
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
   }
 
   List<Widget> _pageOverlays(BuildContext context, Rect pageRect, PdfPage page) => switch (_mode) {
@@ -570,7 +581,7 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
                     errorBannerBuilder: (context, error, stackTrace, documentRef) => Center(
                       child: Padding(
                         padding: const EdgeInsets.all(24),
-                        child: Text('This PDF could not be opened.\n$error', textAlign: TextAlign.center, style: TextStyle(color: p.textMuted)),
+                        child: Text('This PDF could not be opened.\n${errorText(error)}', textAlign: TextAlign.center, style: TextStyle(color: p.textMuted)),
                       ),
                     ),
                   ),

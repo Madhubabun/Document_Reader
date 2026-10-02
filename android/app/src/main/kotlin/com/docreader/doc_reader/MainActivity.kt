@@ -64,10 +64,13 @@ class MainActivity : FlutterActivity() {
     private fun receive(intent: Intent?) {
         val uris = urisOf(intent ?: return)
         if (uris.isEmpty()) return
+        // The type the sending app declared, used when the provider gives none.
+        val declared = intent.type?.takeIf { !it.contains('*') }
         worker.execute {
-            val copied = uris.mapNotNull { copy(it) }
+            // A file that can't be copied still goes to Flutter, with no
+            // path, so the user hears that it could not be opened.
+            val copied = uris.map { copy(it, declared) ?: mapOf("path" to "", "name" to "", "type" to "") }
             main.post {
-                if (copied.isEmpty()) return@post
                 pending.addAll(copied)
                 channel?.invokeMethod("available", null)
             }
@@ -78,19 +81,19 @@ class MainActivity : FlutterActivity() {
     private fun urisOf(intent: Intent): List<Uri> = when (intent.action) {
         Intent.ACTION_VIEW -> listOfNotNull(intent.data)
         Intent.ACTION_SEND -> listOfNotNull(
-            if (Build.VERSION.SDK_INT >= 33) intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
+            if (Build.VERSION.SDK_INT >= 34) intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
             else intent.getParcelableExtra<Uri>(Intent.EXTRA_STREAM)
         )
         Intent.ACTION_SEND_MULTIPLE -> (
-            if (Build.VERSION.SDK_INT >= 33) intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM, Uri::class.java)
+            if (Build.VERSION.SDK_INT >= 34) intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM, Uri::class.java)
             else intent.getParcelableArrayListExtra<Uri>(Intent.EXTRA_STREAM)
         )?.filterNotNull() ?: emptyList()
         else -> emptyList()
     }.filter { it.scheme == "content" }
 
     /** Copies [uri] into the cache; returns its path, name and type, or null if it can't be read. */
-    private fun copy(uri: Uri): Map<String, String>? = try {
-        val type = contentResolver.getType(uri) ?: ""
+    private fun copy(uri: Uri, declared: String?): Map<String, String>? = try {
+        val type = contentResolver.getType(uri) ?: declared ?: ""
         var name = displayName(uri) ?: uri.lastPathSegment?.substringAfterLast('/') ?: "file"
         name = name.replace(Regex("[\\\\/:*?\"<>|\\x00-\\x1F]"), "-").trim().trimStart('.').ifEmpty { "file" }
         if (!name.contains('.')) {

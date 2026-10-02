@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:doc_reader/models/conversion.dart';
@@ -75,7 +76,13 @@ void main() {
     expect(safeBaseName('...hidden', fallback: 'x'), 'hidden');
     expect(safeBaseName('  ', fallback: 'Scan'), 'Scan');
     expect(safeBaseName('a/b\\c', fallback: 'x'), 'a-b-c');
-    expect(safeBaseName('x' * 200, fallback: 'y'), hasLength(120));
+    expect(safeBaseName('x' * 200, fallback: 'y'), hasLength(180));
+    // Names are cut by bytes, between characters.
+    final long = safeBaseName('漢' * 100, fallback: 'y');
+    expect(long, '漢' * 60);
+    final emoji = safeBaseName('a${'😀' * 60}', fallback: 'y');
+    expect(utf8.encode(emoji).length, lessThanOrEqualTo(180));
+    expect(emoji.runes.every((r) => r == 0x61 || r == 0x1F600), isTrue);
   });
 
   test('load drops entries whose file is gone', () async {

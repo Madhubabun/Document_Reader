@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:math' as math;
 import 'dart:ui' as ui;
 
 import 'package:flutter/services.dart';
@@ -87,8 +88,9 @@ class TextReader {
       onPage?.call(page.pageNumber, doc.pages.length);
       final existing = await page.loadText();
       if (existing != null && existing.fullText.trim().isNotEmpty) continue;
-      // About 200 pixels per inch: small print reads well.
-      final scale = 200 / 72;
+      // About 200 pixels per inch, so small print reads well, but no more
+      // than 4000 pixels on the long side, so huge pages fit in memory.
+      final scale = math.min(200 / 72, 4000 / math.max(page.width, page.height));
       final width = (page.width * scale).round();
       final height = (page.height * scale).round();
       final rendered = await page.render(fullWidth: width.toDouble(), fullHeight: height.toDouble(), width: width, height: height, backgroundColor: 0xFFFFFFFF);

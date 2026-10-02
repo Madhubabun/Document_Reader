@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 
 import '../app_scope.dart';
 import '../models/doc_file.dart';
+import '../services/error_text.dart';
 import '../services/new_documents.dart';
 import '../theme/app_theme.dart';
 import '../widgets/glass.dart';
@@ -19,7 +20,7 @@ Future<List<DocFile>> browsePdfs(BuildContext context) async {
     final picked = await FilePicker.pickFiles(type: FileType.custom, allowedExtensions: const ['pdf']);
     return [for (final f in picked) await library.importBytes(f.name, await f.readAsBytes())];
   } catch (e) {
-    messenger.showSnackBar(SnackBar(content: Text('Could not open the file: $e')));
+    messenger.showSnackBar(SnackBar(content: Text('Could not open the file. ${errorText(e)}')));
     return const [];
   }
 }

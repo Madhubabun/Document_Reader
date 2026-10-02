@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:doc_reader/app_scope.dart';
@@ -7,6 +8,7 @@ import 'package:doc_reader/screens/images_to_pdf_screen.dart';
 import 'package:doc_reader/screens/office_reader_screen.dart';
 import 'package:doc_reader/screens/pdf/pdf_tool_flows.dart';
 import 'package:doc_reader/screens/pdf_reader_screen.dart';
+import 'package:doc_reader/services/error_text.dart';
 import 'package:doc_reader/services/library_store.dart';
 import 'package:doc_reader/services/ooxml/docx_reader.dart';
 import 'package:doc_reader/services/pdf_tools.dart';
@@ -109,6 +111,32 @@ void main() {
         .toList();
     expect(boxes, hasLength(2));
     expect(boxes.first.$1, lessThan(boxes.first.$2));
+  });
+
+  testWidgets('the progress spinner closes itself, not a screen opened over it', (tester) async {
+    await host(tester, const Scaffold(body: Text('Start')));
+    final context = tester.element(find.text('Start'));
+    final done = Completer<void>();
+    final result = runWithProgress(context, 'Working…', (_) => done.future.then((_) => 7));
+    await tester.pump();
+    expect(find.text('Working…'), findsOneWidget);
+    // A shared file opens a screen on top while the work runs.
+    unawaited(Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => const Scaffold(body: Text('Shared file')))));
+    await tester.pumpAndSettle();
+    done.complete();
+    expect(await result, 7);
+    await tester.pumpAndSettle();
+    expect(find.text('Shared file'), findsOneWidget);
+    expect(find.text('Working…'), findsNothing);
+    expect(Navigator.of(context).canPop(), isTrue);
+  });
+
+  test('errors are told in plain words', () {
+    expect(errorText(const PdfPasswordException('bad')), 'The password is not right.');
+    expect(errorText(const PdfException('FPDF_ERR_FORMAT')), contains('damaged'));
+    expect(errorText(PlatformException(code: 'already_active')), 'Another picker is already open.');
+    expect(errorText(const PdfToolError('Type a password.')), 'Type a password.');
+    expect(errorText(Exception('x')), 'Something went wrong. Please try again.');
   });
 
   test('page ranges are read the way people type them', () {

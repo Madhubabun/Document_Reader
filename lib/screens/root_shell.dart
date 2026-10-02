@@ -55,7 +55,10 @@ class _RootShellState extends State<RootShell> {
     for (final f in files) {
       try {
         final ext = f.name.contains('.') ? f.name.split('.').last.toLowerCase() : '';
-        if (f.isImage) {
+        if (f.path.isEmpty) {
+          // The phone could not copy it.
+          skipped++;
+        } else if (f.isImage) {
           pictures.add(await File(f.path).readAsBytes());
         } else if (supportedExtensions.contains(ext)) {
           documents.add(await library.importBytes(f.name, await File(f.path).readAsBytes()));
@@ -74,8 +77,13 @@ class _RootShellState extends State<RootShell> {
     }
     if (pictures.isNotEmpty) {
       if (documents.isNotEmpty) messenger.showSnackBar(SnackBar(content: Text('Added ${documents.length} ${documents.length == 1 ? 'file' : 'files'} to your library.')));
-      // Not awaited: more files may arrive while this screen is open.
-      unawaited(navigator.push(MaterialPageRoute<void>(builder: (_) => ImagesToPdfScreen(initial: pictures))));
+      // Pictures shared while "Pictures to PDF" is showing join those pages.
+      if (ImagesToPdfScreen.addToOpen(pictures)) {
+        messenger.showSnackBar(SnackBar(content: Text('Added ${pictures.length} ${pictures.length == 1 ? 'picture' : 'pictures'} to the PDF.')));
+      } else {
+        // Not awaited: more files may arrive while this screen is open.
+        unawaited(navigator.push(MaterialPageRoute<void>(builder: (_) => ImagesToPdfScreen(initial: pictures))));
+      }
     } else if (documents.isNotEmpty) {
       if (documents.length > 1) messenger.showSnackBar(SnackBar(content: Text('Added ${documents.length} files. Opening the first.')));
       unawaited(openDocument(context, documents.first));

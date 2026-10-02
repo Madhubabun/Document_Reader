@@ -522,8 +522,6 @@ class PptxEditor implements DocumentEditor {
     return _insertSlide(copy, rels, index);
   }
 
-  /// Adds a slide with the same layout as slide [after], with that layout's
-  /// empty placeholders, and returns its index.
   /// The "Title and Content" layout of [layoutPart]'s slide master, if any.
   String? _contentLayout(String layoutPart) {
     final master = _pkg.relationshipOfType(layoutPart, '/slideMaster');
@@ -536,6 +534,9 @@ class PptxEditor implements DocumentEditor {
     return null;
   }
 
+  /// Adds a slide with the same layout as slide [after], with that layout's
+  /// empty placeholders, and returns its index. After a title slide, the
+  /// new slide uses the "Title and Content" layout instead.
   int addSlide(int after) {
     final reference = _slideParts.isEmpty ? null : _slideParts[after.clamp(0, _slideParts.length - 1)];
     String? layoutTarget;
