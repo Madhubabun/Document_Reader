@@ -6,6 +6,7 @@ import 'package:path/path.dart' as p;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/doc_file.dart';
+import 'signature_store.dart';
 
 /// Recent files and favorites, persisted locally.
 ///
@@ -20,6 +21,9 @@ class LibraryStore extends ChangeNotifier {
   final SharedPreferences _prefs;
   final Directory _libraryDir;
   List<DocFile> _files = [];
+
+  /// Signatures saved for signing PDFs.
+  late final signatures = SignatureStore(Directory(p.join(_libraryDir.path, '.signatures')));
 
   List<DocFile> get files => List.unmodifiable(_files);
 
