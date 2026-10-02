@@ -6,6 +6,7 @@ import '../../services/ooxml/xlsx_reader.dart';
 import '../../theme/app_theme.dart';
 import '../../widgets/glass.dart';
 import '../../widgets/pinch_zoom.dart';
+import '../../widgets/text_dialog.dart';
 import 'word_view.dart';
 
 /// Grid view of an Excel workbook with sheet tabs and a formula bar.
@@ -271,39 +272,14 @@ class _SpreadsheetViewState extends State<SpreadsheetView> {
   Future<String?> _askName(String title, String initial, {int? except}) async {
     final editor = _editor;
     if (editor == null) return null;
-    final controller = TextEditingController(text: initial);
-    String? error;
-    final result = await showDialog<String>(
-      context: context,
-      builder: (context) => StatefulBuilder(
-        builder: (context, setDialogState) => AlertDialog(
-          title: Text(title),
-          content: TextField(
-            controller: controller,
-            autofocus: true,
-            maxLength: 31,
-            decoration: InputDecoration(errorText: error),
-            onChanged: (_) => setDialogState(() => error = null),
-          ),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
-            TextButton(
-              onPressed: () {
-                final problem = editor.sheetNameProblem(controller.text, except: except);
-                if (problem != null) {
-                  setDialogState(() => error = problem);
-                } else {
-                  Navigator.pop(context, controller.text.trim());
-                }
-              },
-              child: const Text('OK'),
-            ),
-          ],
-        ),
-      ),
+    final name = await showTextDialog(
+      context,
+      title: title,
+      initial: initial,
+      maxLength: 31,
+      validate: (text) => editor.sheetNameProblem(text, except: except),
     );
-    controller.dispose();
-    return result;
+    return name?.trim();
   }
 
   Future<void> _renameSheet(int index) async {

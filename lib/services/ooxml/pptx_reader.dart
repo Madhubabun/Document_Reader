@@ -40,7 +40,29 @@ class EmuRect {
 }
 
 class PptxShape {
-  const PptxShape({required this.kind, this.rect, this.paragraphs = const [], this.imageBytes, this.fill, this.anchor = 't'});
+  const PptxShape({
+    required this.kind,
+    this.rect,
+    this.paragraphs = const [],
+    this.imageBytes,
+    this.fill,
+    this.anchor = 't',
+    this.ref,
+    this.inGroup = false,
+    this.placeholder = false,
+  });
+
+  /// Index of the shape's XML element in the editor's list for its slide,
+  /// when the presentation was read for editing.
+  final int? ref;
+
+  /// Shapes inside a group are positioned by the group, so they can't be
+  /// moved on their own.
+  final bool inGroup;
+
+  /// A layout placeholder ("Click to add title"); empty ones are only read
+  /// for editing.
+  final bool placeholder;
 
   final PptxShapeKind kind;
   final EmuRect? rect;
@@ -88,8 +110,13 @@ class PptxReader {
   static const defaultWidth = 12192000; // 13.333 in, 16:9
   static const defaultHeight = 6858000; // 7.5 in
 
-  static PptxPresentation read(List<int> bytes) {
-    final pkg = OoxmlPackage(bytes);
+  static PptxPresentation read(List<int> bytes) => readFrom(OoxmlPackage(bytes));
+
+  /// Reads a presentation from [pkg]. When [slideParts] and [shapeElements]
+  /// are given (for editing), they receive each slide's part name and the
+  /// XML element of each shape, and shapes carry their index as `ref`.
+  /// Editing also reads empty placeholders, so they can be typed into.
+  static PptxPresentation readFrom(PackageSource pkg, {List<String>? slideParts, List<List<XmlElement>>? shapeElements}) {
     const presPart = 'ppt/presentation.xml';
     final pres = pkg.xml(presPart);
     if (pres == null) throw OoxmlFormatException('Not a PowerPoint file (ppt/presentation.xml missing).');
@@ -104,12 +131,15 @@ class PptxReader {
       if (target == null) continue;
       final slideXml = pkg.xml(target);
       if (slideXml == null) continue;
-      slides.add(_readSlide(pkg, target, slideXml, pres.rootElement.kid('defaultTextStyle')));
+      final elements = shapeElements == null ? null : <XmlElement>[];
+      slides.add(readSlide(pkg, target, slideXml, pres.rootElement.kid('defaultTextStyle'), elements: elements));
+      slideParts?.add(target);
+      if (elements != null) shapeElements!.add(elements);
     }
     return PptxPresentation(slideWidth: width, slideHeight: height, slides: slides);
   }
 
-  static PptxSlide _readSlide(OoxmlPackage pkg, String part, XmlDocument xml, XmlElement? defaultTextStyle) {
+  static PptxSlide readSlide(PackageSource pkg, String part, XmlDocument xml, XmlElement? defaultTextStyle, {List<XmlElement>? elements}) {
     final rels = pkg.relationships(part);
     final cSld = xml.rootElement.kid('cSld');
     final tree = cSld?.kid('spTree');
@@ -133,7 +163,7 @@ class PptxReader {
       bodyStyle: _levels(txStyles?.kid('bodyStyle')),
       otherStyle: _levels(defaultTextStyle ?? txStyles?.kid('otherStyle')),
     );
-    if (tree != null) _collect(pkg, rels, tree, shapes, ctx);
+    if (tree != null) _collect(pkg, rels, tree, shapes, ctx, elements: elements);
 
     // Background: the first of slide, layout and master that defines one.
     String? bgColor;
@@ -147,7 +177,7 @@ class PptxReader {
         if (blip != null) {
           final target = pkg.relationships(ownerPart)[blip];
           final data = target == null ? null : pkg.bytes(target);
-          if (data != null) bgImage = Uint8List.fromList(data);
+          if (data != null) bgImage = data is Uint8List ? data : Uint8List.fromList(data);
         }
         bgColor = colors.fill(bgPr);
       } else {
@@ -193,7 +223,14 @@ class PptxReader {
     return out;
   }
 
-  static void _collect(OoxmlPackage pkg, Map<String, String> rels, XmlElement tree, List<PptxShape> out, _SlideContext ctx) {
+  static void _collect(PackageSource pkg, Map<String, String> rels, XmlElement tree, List<PptxShape> out, _SlideContext ctx,
+      {List<XmlElement>? elements, bool inGroup = false}) {
+    int? register(XmlElement el) {
+      if (elements == null) return null;
+      elements.add(el);
+      return elements.length - 1;
+    }
+
     for (final el in tree.childElements) {
       switch (el.name.local) {
         case 'sp':
@@ -224,14 +261,23 @@ class PptxReader {
           }
           final spPr = el.kid('spPr');
           final fill = ctx.colors.fill(spPr);
-          if (paragraphs.every((p) => p.text.trim().isEmpty) && fill == null) continue;
+          if (paragraphs.every((p) => p.text.trim().isEmpty) && fill == null && (elements == null || ph == null)) continue;
           var rect = _rect(spPr);
           var anchor = txBody?.kid('bodyPr')?.attr('anchor');
           for (final parent in parents) {
             rect ??= parent.rect;
             anchor ??= parent.anchor;
           }
-          out.add(PptxShape(kind: kind, rect: rect, paragraphs: paragraphs, fill: fill, anchor: anchor ?? 't'));
+          out.add(PptxShape(
+            kind: kind,
+            rect: rect,
+            paragraphs: paragraphs,
+            fill: fill,
+            anchor: anchor ?? 't',
+            ref: register(el),
+            inGroup: inGroup,
+            placeholder: ph != null,
+          ));
         case 'pic':
           final id = el.deep('blip').firstOrNull?.attr('embed');
           final target = id == null ? null : rels[id];
@@ -240,10 +286,12 @@ class PptxReader {
           out.add(PptxShape(
             kind: PptxShapeKind.picture,
             rect: _rect(el.kid('spPr')),
-            imageBytes: Uint8List.fromList(data),
+            imageBytes: data is Uint8List ? data : Uint8List.fromList(data),
+            ref: register(el),
+            inGroup: inGroup,
           ));
         case 'grpSp':
-          _collect(pkg, rels, el, out, ctx);
+          _collect(pkg, rels, el, out, ctx, elements: elements, inGroup: true);
       }
     }
   }

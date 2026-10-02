@@ -232,4 +232,66 @@ void main() {
     await tester.binding.setSurfaceSize(null);
     dir.deleteSync(recursive: true);
   });
+
+  testWidgets('PowerPoint shapes can be retyped, moved and slides added', (tester) async {
+    SharedPreferences.setMockInitialValues({});
+    final prefs = await SharedPreferences.getInstance();
+    final dir = Directory.systemTemp.createTempSync('pptx_edit');
+    final library = LibraryStore(prefs, dir);
+    late DocFile file;
+    await tester.runAsync(() async => file = await library.importBytes('Deck.pptx', File('test/fixtures/sample.pptx').readAsBytesSync()));
+    await tester.binding.setSurfaceSize(const Size(430, 900));
+    await tester.pumpWidget(AppScope(
+      library: library,
+      settings: SettingsStore(prefs),
+      child: MaterialApp(theme: AppTheme.dark(), home: OfficeReaderScreen(file: file)),
+    ));
+    for (var i = 0; i < 50 && find.text('Q3 Highlights', findRichText: true).evaluate().isEmpty; i++) {
+      await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 50)));
+      await tester.pump();
+    }
+    await tester.tap(find.text('Edit'));
+    await tester.pump();
+
+    // Select the title, tap it again and retype it.
+    final title = find.text('Q3 Highlights', findRichText: true);
+    await tester.tap(title);
+    await tester.pump();
+    expect(find.byKey(const ValueKey('selected-shape')), findsOneWidget);
+    await tester.tap(title);
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byKey(const ValueKey('slide-text')), 'Q4 Highlights');
+    await tester.tap(find.text('OK'));
+    await tester.pumpAndSettle();
+    expect(find.text('Q4 Highlights', findRichText: true), findsOneWidget);
+
+    // Drag it down a little.
+    final before = tester.getTopLeft(find.byKey(const ValueKey('selected-shape')));
+    await tester.drag(find.text('Q4 Highlights', findRichText: true), const Offset(0, 40));
+    await tester.pump();
+    final after = tester.getTopLeft(find.byKey(const ValueKey('selected-shape')));
+    expect(after.dy - before.dy, closeTo(40, 12));
+
+    // Deselect by tapping an empty area, then add a slide after the first.
+    final slide = tester.getRect(find.byKey(const ValueKey('selected-shape')));
+    await tester.tapAt(Offset(slide.left + 4, slide.bottom + 30));
+    await tester.pump();
+    await tester.tap(find.byTooltip('New slide'));
+    await tester.pump();
+    expect(find.text('Tap to add title'), findsWidgets);
+
+    await tester.tap(find.text('Done'));
+    await tester.pump();
+    for (var i = 0; i < 40 && library.byPath(file.path)!.sizeBytes == file.sizeBytes; i++) {
+      await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 50)));
+      await tester.pump();
+    }
+    final saved = PptxReader.read(File(file.path).readAsBytesSync());
+    expect(saved.slides, hasLength(3));
+    expect(saved.slides.first.title, 'Q4 Highlights');
+    expect(saved.slides.first.shapes.first.rect, isNotNull);
+    await tester.pumpWidget(const SizedBox());
+    await tester.binding.setSurfaceSize(null);
+    dir.deleteSync(recursive: true);
+  });
 }

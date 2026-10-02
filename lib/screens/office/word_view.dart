@@ -9,6 +9,7 @@ import '../../theme/app_theme.dart';
 import '../../widgets/glass.dart';
 import '../../widgets/pinch_zoom.dart';
 import '../../widgets/reader_chrome.dart';
+import '../../widgets/text_dialog.dart';
 
 /// Office fonts first; Carlito and Liberation are metric-compatible stand-ins
 /// where Calibri/Arial/Times are not installed.
@@ -378,19 +379,7 @@ class _WordViewState extends State<WordView> {
     final ref = table.ref;
     if (editor == null || ref == null) return;
     _deactivate();
-    final controller = TextEditingController(text: col < table.rows[row].length ? table.rows[row][col] : '');
-    final result = await showDialog<String>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Edit cell'),
-        content: TextField(controller: controller, autofocus: true, maxLines: null, minLines: 2),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
-          TextButton(onPressed: () => Navigator.pop(context, controller.text), child: const Text('OK')),
-        ],
-      ),
-    );
-    controller.dispose();
+    final result = await showTextDialog(context, title: 'Edit cell', initial: col < table.rows[row].length ? table.rows[row][col] : '', multiline: true);
     if (result == null) return;
     editor.setCellText(ref, row, col, result);
     _changed();

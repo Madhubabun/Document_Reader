@@ -11,6 +11,7 @@ import '../services/library_store.dart';
 import '../services/ooxml/docx_editor.dart';
 import '../services/ooxml/docx_reader.dart';
 import '../services/ooxml/ooxml_editor.dart';
+import '../services/ooxml/pptx_editor.dart';
 import '../services/ooxml/pptx_reader.dart';
 import '../services/ooxml/xlsx_editor.dart';
 import '../services/ooxml/xlsx_reader.dart';
@@ -31,7 +32,7 @@ Object _parse((DocKind, Uint8List) input) => switch (input.$1) {
       // Word and Excel files open straight into their editors, which read them too.
       DocKind.word => DocxEditor.open(input.$2),
       DocKind.excel => XlsxEditor.open(input.$2),
-      DocKind.powerpoint => PptxReader.read(input.$2),
+      DocKind.powerpoint => PptxEditor.open(input.$2),
       _ => throw UnsupportedError('Not an Office file'),
     };
 
@@ -162,6 +163,18 @@ class _OfficeReaderScreenState extends State<OfficeReaderScreen> {
                       DocxDocument d => WordView(document: d, tone: settings.pageTone, outlineRequests: _outlineRequests, onStatus: _setSubtitle),
                       XlsxEditor e => SpreadsheetView(workbook: e.workbook, editor: (_editor ??= e) as XlsxEditor, onStatus: _setSubtitle, onChanged: _changed),
                       XlsxWorkbook w => SpreadsheetView(workbook: w, onStatus: _setSubtitle),
+                      PptxEditor e => SlidesView(
+                          presentation: e.presentation,
+                          editor: (_editor ??= e) as PptxEditor,
+                          editing: _editing,
+                          outlineRequests: _outlineRequests,
+                          onStatus: _setSubtitle,
+                          onChanged: _changed,
+                          onDoneEditing: () {
+                            _saveNow();
+                            setState(() => _editing = false);
+                          },
+                        ),
                       PptxPresentation s => SlidesView(presentation: s, outlineRequests: _outlineRequests, onStatus: _setSubtitle),
                       _ => const SizedBox.shrink(),
                     },
@@ -191,16 +204,8 @@ class _OfficeReaderScreenState extends State<OfficeReaderScreen> {
                     () => _outlineRequests.value++,
                   ),
                   DockAction(Icons.edit_outlined, 'Edit', () {
-                    if (kind == DocKind.word) {
-                      // Still opening when there's no editor yet.
-                      if (_editor is DocxEditor) setState(() => _editing = true);
-                      return;
-                    }
-                    showComingSoon(
-                      context,
-                      'Editing ${kind.label}',
-                      'Editing text, formatting, images and tables is being built next, saved as standard ${widget.file.extension} that opens in Microsoft 365.',
-                    );
+                    // Nothing to do while the file is still opening.
+                    if (_editor != null) setState(() => _editing = true);
                   }),
                   if (kind == DocKind.word) DockAction(Icons.contrast_rounded, 'Page', () => showPageToneSheet(context, settings)),
                   DockAction(Icons.ios_share_rounded, 'Share', () => shareDocument(widget.file)),

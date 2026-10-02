@@ -36,7 +36,7 @@ class EditRefused implements Exception {
 /// XML parts are parsed on first use and kept; only the parts marked dirty
 /// are written back by [save]. Every other part is copied byte for byte, so
 /// a file keeps everything the app doesn't understand.
-class EditablePackage {
+class EditablePackage implements PackageSource {
   EditablePackage(List<int> bytes) : _archive = ZipDecoder().decodeBytes(bytes);
 
   static const relNs = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
@@ -57,6 +57,7 @@ class EditablePackage {
 
   bool has(String path) => !_removed.contains(path) && (_docs.containsKey(path) || _archive.findFile(path) != null);
 
+  @override
   XmlDocument? xml(String path) {
     final cached = _docs[path];
     if (cached != null) return cached;
@@ -67,6 +68,7 @@ class EditablePackage {
   }
 
   /// Raw bytes of a part, the same list every time (for pictures).
+  @override
   Uint8List? bytes(String path) {
     final cached = _bytes[path];
     if (cached != null) return cached;
@@ -95,14 +97,15 @@ class EditablePackage {
   }
 
   /// Relationship id -> `<Relationship>` element.
-  Map<String, XmlElement> relationships(String part) => {
+  Map<String, XmlElement> relationshipElements(String part) => {
         for (final r in xml(relsPath(part))?.rootElement.kids('Relationship') ?? const <XmlElement>[])
           if (r.attr('Id') != null) r.attr('Id')!: r,
       };
 
   /// Relationship id -> resolved part path, for internal targets.
-  Map<String, String> targets(String part) => {
-        for (final e in relationships(part).entries)
+  @override
+  Map<String, String> relationships(String part) => {
+        for (final e in relationshipElements(part).entries)
           if (e.value.attr('TargetMode') != 'External') e.key: target(part, e.value),
       };
 
@@ -111,8 +114,9 @@ class EditablePackage {
     return OoxmlPackage.resolvePath(slash < 0 ? '' : part.substring(0, slash), rel.attr('Target') ?? '');
   }
 
-  String? targetOfType(String part, String typeSuffix) {
-    for (final r in relationships(part).values) {
+  @override
+  String? relationshipOfType(String part, String typeSuffix) {
+    for (final r in relationshipElements(part).values) {
       if ((r.attr('Type') ?? '').endsWith(typeSuffix)) return target(part, r);
     }
     return null;
