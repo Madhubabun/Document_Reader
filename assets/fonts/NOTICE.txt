@@ -1,5 +1,7 @@
 Sora - Copyright 2019 The Sora Project Authors (https://github.com/sora-xor/sora-font)
 Manrope - Copyright 2018 The Manrope Project Authors (https://github.com/sharanda/manrope)
 
-Both fonts are licensed under the SIL Open Font License, Version 1.1
+Carlito - Copyright 2010-2013 tyPoland Lukasz Dziedzic (metric-compatible with Calibri)
+
+All three fonts are licensed under the SIL Open Font License, Version 1.1
 (https://openfontlicense.org). They were downloaded from Google Fonts.

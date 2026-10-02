@@ -107,6 +107,10 @@ class _WordViewState extends State<WordView> {
   Widget _block(DocxBlock block) => switch (block) {
         DocxParagraph p => _paragraph(p),
         DocxTable t => _table(t),
+        DocxPageBreak _ => const Padding(
+            padding: EdgeInsets.symmetric(vertical: 14),
+            child: Divider(color: Color(0xFFD9D9E0), thickness: 1),
+          ),
         DocxImage img => Padding(
             padding: const EdgeInsets.symmetric(vertical: 8),
             child: Image.memory(img.bytes, fit: BoxFit.contain, errorBuilder: (_, _, _) => const SizedBox.shrink()),

@@ -72,16 +72,37 @@ class DocxImage extends DocxBlock {
   final int? heightEmu;
 }
 
+/// A hard page break (`<w:br w:type="page"/>`).
+class DocxPageBreak extends DocxBlock {
+  const DocxPageBreak();
+}
+
+/// Page geometry from the last section, in twentieths of a point.
+class DocxPageSetup {
+  const DocxPageSetup({this.width = 11906, this.height = 16838, this.marginTop = 1440, this.marginRight = 1440, this.marginBottom = 1440, this.marginLeft = 1440});
+
+  static const a4 = DocxPageSetup();
+  static const letter = DocxPageSetup(width: 12240, height: 15840);
+
+  final int width;
+  final int height;
+  final int marginTop;
+  final int marginRight;
+  final int marginBottom;
+  final int marginLeft;
+}
+
 class DocxDocument {
-  const DocxDocument(this.blocks);
+  const DocxDocument(this.blocks, {this.page = DocxPageSetup.a4});
 
   final List<DocxBlock> blocks;
+  final DocxPageSetup page;
 
   String get plainText => blocks
       .map((b) => switch (b) {
             DocxParagraph p => p.text,
             DocxTable t => t.rows.map((r) => r.join('\t')).join('\n'),
-            DocxImage _ => '',
+            DocxImage _ || DocxPageBreak _ => '',
           })
       .where((t) => t.isNotEmpty)
       .join('\n');
@@ -108,7 +129,24 @@ class DocxReader {
     }
     final rels = pkg.relationships(mainPart);
     final reader = _BodyReader(pkg, rels, styleNames);
-    return DocxDocument(reader.readBlocks(body));
+    return DocxDocument(reader.readBlocks(body), page: _pageSetup(body.kid('sectPr')));
+  }
+
+  static DocxPageSetup _pageSetup(XmlElement? sectPr) {
+    final size = sectPr?.kid('pgSz');
+    final mar = sectPr?.kid('pgMar');
+    int read(XmlElement? el, String name, int fallback) => int.tryParse(el?.attr(name) ?? '') ?? fallback;
+    var width = read(size, 'w', 11906);
+    var height = read(size, 'h', 16838);
+    if (size?.attr('orient') == 'landscape' && width < height) (width, height) = (height, width);
+    return DocxPageSetup(
+      width: width,
+      height: height,
+      marginTop: read(mar, 'top', 1440).abs(),
+      marginRight: read(mar, 'right', 1440),
+      marginBottom: read(mar, 'bottom', 1440).abs(),
+      marginLeft: read(mar, 'left', 1440),
+    );
   }
 }
 
@@ -184,8 +222,12 @@ class _BodyReader {
     }
 
     collectRuns(p);
+    if (pPr?.kid('pageBreakBefore')?.isOn == true) yield const DocxPageBreak();
     yield DocxParagraph(runs: runs, headingLevel: heading, isTitle: isTitle, listLevel: listLevel, align: align);
     yield* images;
+    if (p.deep('br').any((br) => br.attr('type') == 'page')) {
+      yield const DocxPageBreak();
+    }
   }
 
   DocxRun? _run(XmlElement r) {
