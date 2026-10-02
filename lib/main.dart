@@ -19,7 +19,7 @@ Future<void> main() async {
   pdfrxFlutterInitialize();
   SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
   LicenseRegistry.addLicense(() async* {
-    yield LicenseEntryWithLineBreaks(['Sora', 'Manrope'], await rootBundle.loadString('assets/fonts/NOTICE.txt'));
+    yield LicenseEntryWithLineBreaks(['Sora', 'Manrope', 'Carlito', 'Noto Sans'], await rootBundle.loadString('assets/fonts/NOTICE.txt'));
   });
   final prefs = await SharedPreferences.getInstance();
   final docs = await getApplicationDocumentsDirectory();

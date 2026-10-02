@@ -131,8 +131,12 @@ class SlideCanvas extends StatelessWidget {
           final r = Rect.fromLTWH(rect.x * scale, rect.y * scale, rect.width * scale, rect.height * scale);
           children.add(Positioned.fromRect(rect: r, child: _shape(shape, scale, r.width)));
         }
+        final bgImage = slide.backgroundImage;
         return Container(
-          color: _hex(slide.background) ?? Colors.white,
+          decoration: BoxDecoration(
+            color: _hex(slide.background) ?? Colors.white,
+            image: bgImage == null ? null : DecorationImage(image: MemoryImage(bgImage), fit: BoxFit.fill),
+          ),
           child: Stack(clipBehavior: Clip.hardEdge, children: children),
         );
       }),
@@ -154,11 +158,16 @@ class SlideCanvas extends StatelessWidget {
       padding: EdgeInsets.all(91440 * scale), // 0.1in text inset
       child: FittedBox(
         fit: BoxFit.scaleDown,
-        alignment: shape.kind == PptxShapeKind.title ? Alignment.centerLeft : Alignment.topLeft,
+        alignment: switch (shape.anchor) {
+          'ctr' => Alignment.centerLeft,
+          'b' => Alignment.bottomLeft,
+          _ => Alignment.topLeft,
+        },
         child: ConstrainedBox(
           constraints: BoxConstraints(maxWidth: (width - 2 * 91440 * scale).clamp(20, double.infinity)),
           child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+            // Stretch so centred and right-aligned paragraphs line up across the box.
+            crossAxisAlignment: CrossAxisAlignment.stretch,
             mainAxisSize: MainAxisSize.min,
             children: [
               for (final para in paragraphs)

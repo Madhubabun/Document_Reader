@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
+import 'package:pdfrx/pdfrx.dart';
 
 import '../app_scope.dart';
 import '../models/conversion.dart';
 import '../models/doc_file.dart';
+import '../services/convert/converter.dart';
 import '../services/document_actions.dart';
 import '../theme/app_theme.dart';
 import '../widgets/glass.dart';
@@ -18,7 +20,7 @@ class _ConvertScreenState extends State<ConvertScreen> {
   DocFile? _source;
   ConversionTarget? _target;
   bool _keepLayout = true;
-  bool _ocr = false;
+  bool _busy = false;
 
   void _setSource(DocFile file) {
     final targets = conversionTargets(file.kind);
@@ -68,6 +70,112 @@ class _ConvertScreenState extends State<ConvertScreen> {
     });
     if (picked != null) _setSource(picked);
   }
+
+  String _layoutHint(DocKind kind) => kind == DocKind.pdf
+      ? 'Start a new Word page for each PDF page'
+      : 'Uses your page size, fonts and spacing';
+
+  Future<void> _convert() async {
+    final source = _source!;
+    final target = _target!;
+    final library = AppScope.of(context).library;
+    setState(() => _busy = true);
+    try {
+      final bytes = await convertFile(
+        source.path,
+        target.extension,
+        fonts: loadBundledOfficeFonts,
+        keepLayout: _keepLayout,
+        passwordProvider: _askPassword,
+      );
+      final saved = await library.importBytes(convertedName(source.name, target.extension), bytes);
+      if (!mounted) return;
+      await _showResult(saved, target);
+    } on PdfPasswordException {
+      if (mounted) _showError('Wrong password', 'That password did not unlock the PDF. Try again.');
+    } on NoTextException {
+      if (mounted) {
+        _showError('No text found', 'This PDF looks like scanned images, so there is no text to edit. Convert it to PowerPoint to keep the pages as pictures.');
+      }
+    } catch (e) {
+      if (mounted) _showError('Could not convert', 'Something in this file is not supported yet.\n\n$e');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<String?> _askPassword() {
+    final controller = TextEditingController();
+    return showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Password protected'),
+        content: TextField(
+          controller: controller,
+          obscureText: true,
+          autofocus: true,
+          decoration: const InputDecoration(hintText: 'PDF password'),
+          onSubmitted: (v) => Navigator.pop(context, v),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
+          TextButton(onPressed: () => Navigator.pop(context, controller.text), child: const Text('Unlock')),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _showResult(DocFile saved, ConversionTarget target) {
+    final p = context.palette;
+    final note = target.kind == DocKind.powerpoint
+        ? 'Each page is a full-quality picture on its own slide, so it looks exactly like the PDF.'
+        : target.kind == DocKind.pdf
+            ? 'Saved with Calibri-compatible fonts and your original page size.'
+            : 'Saved as a standard .${target.extension} file that opens in Microsoft 365. '
+                'Complex layouts, macros, SmartArt and embedded objects may look slightly different.';
+    return showGlassSheet<void>(
+      context,
+      (sheet) => Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              FileTypeBadge(kind: saved.kind, size: 40),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('Converted', style: Theme.of(sheet).textTheme.titleLarge),
+                    Text(saved.name, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: p.textMuted)),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Text(note, style: TextStyle(color: p.textMuted, height: 1.4, fontSize: 13)),
+          const SizedBox(height: 18),
+          NeonButton(
+            label: 'Open',
+            icon: Icons.open_in_new_rounded,
+            onPressed: () {
+              Navigator.pop(sheet);
+              openDocument(context, saved);
+            },
+          ),
+          const SizedBox(height: 10),
+          OutlinedButton.icon(
+            onPressed: () => shareDocument(saved),
+            icon: const Icon(Icons.ios_share_rounded),
+            label: const Text('Share'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showError(String title, String detail) => showComingSoon(context, title, detail);
 
   @override
   Widget build(BuildContext context) {
@@ -157,28 +265,16 @@ class _ConvertScreenState extends State<ConvertScreen> {
                     value: _keepLayout,
                     onChanged: (v) => setState(() => _keepLayout = v),
                     title: const Text('Keep original layout', style: TextStyle(fontWeight: FontWeight.w600)),
+                    subtitle: Text(_layoutHint(source.kind), style: TextStyle(fontSize: 12, color: p.textMuted)),
                   ),
-                  if (source.kind == DocKind.pdf)
-                    SwitchListTile.adaptive(
-                      value: _ocr,
-                      onChanged: (v) => setState(() => _ocr = v),
-                      title: const Text('Make scanned pages editable (OCR)', style: TextStyle(fontWeight: FontWeight.w600)),
-                    ),
                 ],
               ),
             ),
             const SizedBox(height: 20),
             NeonButton(
-              label: _target == null ? 'Convert' : 'Convert to ${_target!.label}',
+              label: _busy ? 'Converting…' : (_target == null ? 'Convert' : 'Convert to ${_target!.label}'),
               icon: Icons.arrow_forward_rounded,
-              onPressed: _target == null
-                  ? null
-                  : () => showComingSoon(
-                        context,
-                        'Converter coming next',
-                        'Converting ${source.name} to .${_target!.extension} is the next feature being built. '
-                            'Office files will be saved as modern .docx, .xlsx and .pptx so they open cleanly in Microsoft 365.',
-                      ),
+              onPressed: _target == null || _busy ? null : _convert,
             ),
             const SizedBox(height: 12),
             Row(
