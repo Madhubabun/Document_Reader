@@ -6,6 +6,8 @@ import 'package:ffi/ffi.dart';
 import 'package:pdfium_dart/pdfium_dart.dart';
 import 'package:pdfrx/pdfrx.dart';
 
+import 'pdfium_session.dart';
+
 /// A change to write into a PDF. Positions are fractions of the page the way
 /// it is shown (top-left origin, after the page's own rotation).
 sealed class PdfEdit {
@@ -52,6 +54,14 @@ class ImageEdit extends PdfEdit {
   final Uint8List rgba;
   final int width;
   final int height;
+}
+
+/// Invisible text over a scanned page, so it can be searched, selected
+/// and copied. Each line's [rect] is a fraction of the shown page.
+class TextLayerEdit extends PdfEdit {
+  const TextLayerEdit(super.pageNumber, {required this.lines});
+
+  final List<({String text, Rect rect})> lines;
 }
 
 /// A new value for a form field found by [readFormFields].
@@ -152,94 +162,12 @@ bool usesXrefTable(Uint8List pdf) {
 // Everything below runs on pdfrx's PDFium worker isolate, where PDFium is
 // initialised and no other PDFium call can run at the same time.
 
-/// Device size used to map fractions to page space; the mapping takes
-/// whole pixels, so a large one keeps positions precise.
-const _device = 1000000;
-
-/// An open document with its form environment.
-class _Session {
-  _Session(this.pdfium, Uint8List pdf, String? password, this.arena) {
-    _buffer = malloc<Uint8>(pdf.length)..asTypedList(pdf.length).setAll(0, pdf);
-    doc = pdfium.FPDF_LoadMemDocument64(_buffer.cast(), pdf.length, password == null ? nullptr : password.toNativeUtf8(allocator: arena).cast());
-    if (doc == nullptr) {
-      malloc.free(_buffer);
-      throw StateError(pdfium.FPDF_GetLastError() == 4 ? 'The password is wrong.' : 'The PDF could not be opened.');
-    }
-    _formInfo = calloc<FPDF_FORMFILLINFO>()..ref.version = 1;
-    form = pdfium.FPDFDOC_InitFormFillEnvironment(doc, _formInfo);
-  }
-
-  final PDFium pdfium;
-  final Arena arena;
-  late final Pointer<Uint8> _buffer;
-  late final FPDF_DOCUMENT doc;
-  late final Pointer<FPDF_FORMFILLINFO> _formInfo;
-  late final FPDF_FORMHANDLE form;
-
-  FPDF_PAGE openPage(int pageNumber) {
-    final page = pdfium.FPDF_LoadPage(doc, pageNumber - 1);
-    if (page == nullptr) throw StateError('Page $pageNumber could not be opened.');
-    if (form != nullptr) pdfium.FORM_OnAfterLoadPage(page, form);
-    return page;
-  }
-
-  void closePage(FPDF_PAGE page) {
-    if (form != nullptr) pdfium.FORM_OnBeforeClosePage(page, form);
-    pdfium.FPDF_ClosePage(page);
-  }
-
-  /// Maps a fraction of the shown page to page space.
-  (double, double) toPage(FPDF_PAGE page, Offset f) {
-    final px = arena<Double>();
-    final py = arena<Double>();
-    pdfium.FPDF_DeviceToPage(page, 0, 0, _device, _device, 0, (f.dx * _device).round(), (f.dy * _device).round(), px, py);
-    return (px.value, py.value);
-  }
-
-  /// Maps a page-space rectangle to fractions of the shown page.
-  Rect toFraction(FPDF_PAGE page, double left, double top, double right, double bottom) {
-    final dx = arena<Int>();
-    final dy = arena<Int>();
-    pdfium.FPDF_PageToDevice(page, 0, 0, _device, _device, 0, left, top, dx, dy);
-    final a = Offset(dx.value / _device, dy.value / _device);
-    pdfium.FPDF_PageToDevice(page, 0, 0, _device, _device, 0, right, bottom, dx, dy);
-    final b = Offset(dx.value / _device, dy.value / _device);
-    return Rect.fromPoints(a, b);
-  }
-
-  Uint8List save({required bool incremental}) {
-    final out = BytesBuilder(copy: true);
-    int write(Pointer<FPDF_FILEWRITE> self, Pointer<Void> data, int size) {
-      out.add(data.cast<Uint8>().asTypedList(size));
-      return 1;
-    }
-
-    final callable = NativeCallable<Int Function(Pointer<FPDF_FILEWRITE>, Pointer<Void>, UnsignedLong)>.isolateLocal(write, exceptionalReturn: 0);
-    try {
-      final fw = arena<FPDF_FILEWRITE>();
-      fw.ref.version = 1;
-      fw.ref.WriteBlock = callable.nativeFunction;
-      if (pdfium.FPDF_SaveAsCopy(doc, fw, incremental ? 1 : 2) == 0) throw StateError('The PDF could not be saved.');
-    } finally {
-      callable.close();
-    }
-    return out.takeBytes();
-  }
-
-  void close() {
-    if (form != nullptr) pdfium.FPDFDOC_ExitFormFillEnvironment(form);
-    calloc.free(_formInfo);
-    pdfium.FPDF_CloseDocument(doc);
-    malloc.free(_buffer);
-  }
-}
-
 typedef _ApplyMessage = ({Uint8List pdf, List<PdfEdit> edits, String? password, String? modulePath, bool incremental});
 
 ({Uint8List? bytes, String? error}) _applyInWorker(_ApplyMessage m) {
   try {
     return using((arena) {
-      final session = _Session(getPdfium(modulePath: m.modulePath), m.pdf, m.password, arena);
+      final session = PdfiumSession(getPdfium(modulePath: m.modulePath), m.pdf, m.password, arena);
       try {
         // Fields first: the others add annotations, which would shift the
         // indexes that identify fields.
@@ -265,6 +193,8 @@ typedef _ApplyMessage = ({Uint8List pdf, List<PdfEdit> edits, String? password, 
                   annotated = true;
                 case ImageEdit():
                   _addImage(session, page, e);
+                case TextLayerEdit():
+                  _addTextLayer(session, page, e);
                 case FieldEdit():
                   break;
               }
@@ -289,7 +219,7 @@ typedef _ReadMessage = ({Uint8List pdf, String? password, String? modulePath});
 ({List<PdfFormField>? fields, String? error}) _readFieldsInWorker(_ReadMessage m) {
   try {
     return using((arena) {
-      final session = _Session(getPdfium(modulePath: m.modulePath), m.pdf, m.password, arena);
+      final session = PdfiumSession(getPdfium(modulePath: m.modulePath), m.pdf, m.password, arena);
       final pdfium = session.pdfium;
       final fields = <PdfFormField>[];
       try {
@@ -321,7 +251,7 @@ typedef _ReadMessage = ({Uint8List pdf, String? password, String? modulePath});
                 if (kind == FormFieldKind.choice) {
                   final n = pdfium.FPDFAnnot_GetOptionCount(session.form, annot);
                   for (var o = 0; o < n; o++) {
-                    options.add(_wide((buf, len) => pdfium.FPDFAnnot_GetOptionLabel(session.form, annot, o, buf, len), arena));
+                    options.add(readWide((buf, len) => pdfium.FPDFAnnot_GetOptionLabel(session.form, annot, o, buf, len), arena));
                     if (selected < 0 && pdfium.FPDFAnnot_IsOptionSelected(session.form, annot, o) != 0) selected = o;
                   }
                 }
@@ -329,8 +259,8 @@ typedef _ReadMessage = ({Uint8List pdf, String? password, String? modulePath});
                   pageNumber: n,
                   annotIndex: i,
                   kind: kind,
-                  name: _wide((buf, len) => pdfium.FPDFAnnot_GetFormFieldName(session.form, annot, buf, len), arena),
-                  value: _wide((buf, len) => pdfium.FPDFAnnot_GetFormFieldValue(session.form, annot, buf, len), arena),
+                  name: readWide((buf, len) => pdfium.FPDFAnnot_GetFormFieldName(session.form, annot, buf, len), arena),
+                  value: readWide((buf, len) => pdfium.FPDFAnnot_GetFormFieldValue(session.form, annot, buf, len), arena),
                   checked: (kind == FormFieldKind.checkbox || kind == FormFieldKind.radio) && pdfium.FPDFAnnot_IsChecked(session.form, annot) != 0,
                   options: options,
                   selected: selected,
@@ -356,27 +286,9 @@ typedef _ReadMessage = ({Uint8List pdf, String? password, String? modulePath});
   }
 }
 
-/// Reads a UTF-16 string from a PDFium getter that reports its size in bytes.
-String _wide(int Function(Pointer<UnsignedShort> buffer, int length) get, Arena arena) {
-  final bytes = get(nullptr, 0);
-  if (bytes <= 2) return '';
-  final buffer = arena<UnsignedShort>(bytes ~/ 2);
-  get(buffer, bytes);
-  return String.fromCharCodes(buffer.cast<Uint16>().asTypedList(bytes ~/ 2 - 1));
-}
-
-Pointer<UnsignedShort> _toWide(String text, Arena arena) {
-  final units = text.codeUnits;
-  final p = arena<UnsignedShort>(units.length + 1);
-  final list = p.cast<Uint16>().asTypedList(units.length + 1);
-  list.setAll(0, units);
-  list[units.length] = 0;
-  return p;
-}
-
 /// Fills a field the way a person would, so PDFium updates its value and
 /// redraws it with the field's own font and size.
-void _fillField(_Session s, FPDF_PAGE page, FieldEdit e) {
+void _fillField(PdfiumSession s, FPDF_PAGE page, FieldEdit e) {
   final pdfium = s.pdfium;
   if (s.form == nullptr) throw StateError('This PDF has no form.');
   final annot = pdfium.FPDFPage_GetAnnot(page, e.annotIndex);
@@ -386,7 +298,7 @@ void _fillField(_Session s, FPDF_PAGE page, FieldEdit e) {
     if (e.text != null && type == FPDF_FORMFIELD_TEXTFIELD) {
       if (pdfium.FORM_SetFocusedAnnot(s.form, annot) == 0) throw StateError('A text field could not be filled in.');
       pdfium.FORM_SelectAllText(s.form, page);
-      pdfium.FORM_ReplaceSelection(s.form, page, _toWide(e.text!.replaceAll('\r\n', '\n'), s.arena));
+      pdfium.FORM_ReplaceSelection(s.form, page, toWide(e.text!.replaceAll('\r\n', '\n'), s.arena));
       pdfium.FORM_ForceToKillFocus(s.form);
     } else if (e.checked != null && (type == FPDF_FORMFIELD_CHECKBOX || type == FPDF_FORMFIELD_RADIOBUTTON)) {
       final checked = pdfium.FPDFAnnot_IsChecked(s.form, annot) != 0;
@@ -415,7 +327,7 @@ void _setColor(PDFium pdfium, FPDF_ANNOTATION annot, int argb) {
   pdfium.FPDFAnnot_SetColor(annot, FPDFANNOT_COLORTYPE.FPDFANNOT_COLORTYPE_Color, (argb >> 16) & 0xFF, (argb >> 8) & 0xFF, argb & 0xFF, (argb >> 24) & 0xFF);
 }
 
-void _addMarkup(_Session s, FPDF_PAGE page, MarkupEdit e) {
+void _addMarkup(PdfiumSession s, FPDF_PAGE page, MarkupEdit e) {
   final pdfium = s.pdfium;
   final subtype = switch (e.kind) {
     MarkupKind.highlight => FPDF_ANNOT_HIGHLIGHT,
@@ -475,7 +387,7 @@ void _addMarkup(_Session s, FPDF_PAGE page, MarkupEdit e) {
       // wrong on rotated pages, so write the lines directly.
       String c(int shift) => (((e.color >> shift) & 0xFF) / 255).toStringAsFixed(3);
       final stream = 'q ${c(16)} ${c(8)} ${c(0)} RG 1 J\n$strokes' 'Q';
-      if (pdfium.FPDFAnnot_SetAP(annot, FPDF_ANNOT_APPEARANCEMODE_NORMAL, _toWide(stream, s.arena)) == 0) {
+      if (pdfium.FPDFAnnot_SetAP(annot, FPDF_ANNOT_APPEARANCEMODE_NORMAL, toWide(stream, s.arena)) == 0) {
         throw StateError('The markup could not be drawn.');
       }
     }
@@ -484,7 +396,7 @@ void _addMarkup(_Session s, FPDF_PAGE page, MarkupEdit e) {
   }
 }
 
-void _addInk(_Session s, FPDF_PAGE page, InkEdit e) {
+void _addInk(PdfiumSession s, FPDF_PAGE page, InkEdit e) {
   final pdfium = s.pdfium;
   final annot = pdfium.FPDFPage_CreateAnnot(page, FPDF_ANNOT_INK);
   if (annot == nullptr) throw StateError('The drawing could not be added.');
@@ -526,7 +438,7 @@ void _addInk(_Session s, FPDF_PAGE page, InkEdit e) {
 /// PDFium writes appearance streams for new markup and ink annotations when
 /// it first draws them; drawing the page once stores them in the file, so
 /// readers that don't generate their own still show the annotations.
-void _generateAppearances(_Session s, FPDF_PAGE page) {
+void _generateAppearances(PdfiumSession s, FPDF_PAGE page) {
   final bitmap = s.pdfium.FPDFBitmap_Create(4, 4, 0);
   try {
     s.pdfium.FPDF_RenderPageBitmap(bitmap, page, 0, 0, 4, 4, 0, FPDF_ANNOT);
@@ -535,7 +447,7 @@ void _generateAppearances(_Session s, FPDF_PAGE page) {
   }
 }
 
-void _addImage(_Session s, FPDF_PAGE page, ImageEdit e) {
+void _addImage(PdfiumSession s, FPDF_PAGE page, ImageEdit e) {
   final pdfium = s.pdfium;
   final bitmap = pdfium.FPDFBitmap_Create(e.width, e.height, 1);
   try {
@@ -568,5 +480,47 @@ void _addImage(_Session s, FPDF_PAGE page, ImageEdit e) {
     if (pdfium.FPDFPage_GenerateContent(page) == 0) throw StateError('The page could not be updated.');
   } finally {
     pdfium.FPDFBitmap_Destroy(bitmap);
+  }
+}
+
+/// Adds each line as invisible Helvetica text stretched over its box.
+void _addTextLayer(PdfiumSession s, FPDF_PAGE page, TextLayerEdit e) {
+  final pdfium = s.pdfium;
+  final font = pdfium.FPDFText_LoadStandardFont(s.doc, 'Helvetica'.toNativeUtf8(allocator: s.arena).cast());
+  if (font == nullptr) throw StateError('The text layer could not be added.');
+  try {
+    var added = false;
+    final left = s.arena<Float>();
+    final bottom = s.arena<Float>();
+    final right = s.arena<Float>();
+    final top = s.arena<Float>();
+    for (final line in e.lines) {
+      final text = line.text.trim();
+      if (text.isEmpty || line.rect.width <= 0 || line.rect.height <= 0) continue;
+      final object = pdfium.FPDFPageObj_CreateTextObj(s.doc, font, 1);
+      if (object == nullptr) continue;
+      if (pdfium.FPDFText_SetText(object, toWide(text, s.arena)) == 0 ||
+          pdfium.FPDFPageObj_GetBounds(object, left, bottom, right, top) == 0 ||
+          right.value - left.value <= 0) {
+        pdfium.FPDFPageObj_Destroy(object);
+        continue;
+      }
+      pdfium.FPDFTextObj_SetTextRenderMode(object, FPDF_TEXT_RENDERMODE.FPDF_TEXTRENDERMODE_INVISIBLE);
+      // Text space: x runs 0..width along the baseline, y 1 per font size.
+      // Map it onto the box, baseline a fifth of the way up, the way the
+      // corners land on the page (so turned pages work too).
+      final width = right.value - left.value;
+      final (x0, y0) = s.toPage(page, line.rect.bottomLeft);
+      final (x1, y1) = s.toPage(page, line.rect.bottomRight);
+      final (x2, y2) = s.toPage(page, line.rect.topLeft);
+      final (ux, uy) = ((x1 - x0) / width, (y1 - y0) / width);
+      final (vx, vy) = (x2 - x0, y2 - y0);
+      pdfium.FPDFPageObj_Transform(object, ux, uy, vx, vy, x0 + vx * 0.2, y0 + vy * 0.2);
+      pdfium.FPDFPage_InsertObject(page, object);
+      added = true;
+    }
+    if (added && pdfium.FPDFPage_GenerateContent(page) == 0) throw StateError('The page could not be updated.');
+  } finally {
+    pdfium.FPDFFont_Close(font);
   }
 }

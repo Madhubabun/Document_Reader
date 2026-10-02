@@ -16,15 +16,19 @@ import '../widgets/glass.dart';
 import '../widgets/reader_chrome.dart';
 import 'pdf/pdf_form.dart';
 import 'pdf/pdf_markup.dart';
+import 'pdf/pdf_tool_flows.dart';
 import 'signature_pad_screen.dart';
 
 enum _Mode { view, sign, markup, form }
 
 /// Immersive PDF reader: tap the page to show or hide the floating glass bars.
 class PdfReaderScreen extends StatefulWidget {
-  const PdfReaderScreen({super.key, required this.file});
+  const PdfReaderScreen({super.key, required this.file, this.password});
 
   final DocFile file;
+
+  /// The password, when the file was just unlocked by a tool.
+  final String? password;
 
   @override
   State<PdfReaderScreen> createState() => _PdfReaderScreenState();
@@ -48,7 +52,7 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
   int _revision = 0;
 
   /// The password that opened the file, reused to reopen it after signing.
-  String? _password;
+  late String? _password = widget.password;
   bool _passwordReused = false;
 
   _Mode _mode = _Mode.view;
@@ -404,6 +408,57 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
     }
   }
 
+  /// Reopens the viewer on a file a tool replaced.
+  void _reloadWith(ToolChange? change) {
+    if (change == null || !mounted) return;
+    _searcher?.removeListener(_onSearchChanged);
+    _searcher?.dispose();
+    setState(() {
+      _file = change.file;
+      _password = change.password;
+      _passwordReused = false;
+      _searcher = null;
+      _searching = false;
+      _document = null;
+      _page = 1;
+      _revision++;
+    });
+  }
+
+  Future<void> _showTools() async {
+    final locked = _password != null;
+    final picked = await showGlassSheet<Future<void> Function()>(context, (sheet) {
+      Widget row(String label, IconData icon, Key key, Future<void> Function() action) => ListTile(
+            key: key,
+            contentPadding: const EdgeInsets.symmetric(horizontal: 4),
+            leading: Icon(icon),
+            title: Text(label, style: const TextStyle(fontWeight: FontWeight.w600)),
+            onTap: () => Navigator.pop(sheet, action),
+          );
+      return Flexible(
+        child: SingleChildScrollView(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text('PDF tools', style: Theme.of(sheet).textTheme.titleLarge),
+              const SizedBox(height: 6),
+              row('Organize pages', Icons.view_agenda_outlined, const Key('menu-organize'), () async => _reloadWith(await organizeFile(context, _file, password: _password))),
+              row('Split into files', Icons.call_split_rounded, const Key('menu-split'), () => splitFile(context, _file, password: _password)),
+              row('Make a smaller copy', Icons.compress_rounded, const Key('menu-compress'), () => compressFile(context, _file, password: _password)),
+              row('Make scanned text searchable', Icons.manage_search_rounded, const Key('menu-searchable'),
+                  () async => _reloadWith(await makeSearchable(context, _file, password: _password))),
+              row(locked ? 'Change the password' : 'Add a password', Icons.lock_outline_rounded, const Key('menu-lock'),
+                  () async => _reloadWith(await lockFile(context, _file, password: _password))),
+              if (locked)
+                row('Remove the password', Icons.lock_open_rounded, const Key('menu-unlock'), () async => _reloadWith(await unlockFile(context, _file, password: _password))),
+            ],
+          ),
+        ),
+      );
+    });
+    if (picked != null && mounted) await picked();
+  }
+
   List<Widget> _pageOverlays(BuildContext context, Rect pageRect, PdfPage page) => switch (_mode) {
         _Mode.view => const [],
         _Mode.markup => [
@@ -536,6 +591,12 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
                     actions: [
                       IconButton(tooltip: 'Page colour', onPressed: () => showPageToneSheet(context, settings), icon: const Icon(Icons.contrast_rounded, size: 21)),
                       IconButton(tooltip: 'Share', onPressed: editing ? null : () => shareDocument(_file), icon: const Icon(Icons.ios_share_rounded, size: 21)),
+                      IconButton(
+                        key: const Key('pdf-tools'),
+                        tooltip: 'PDF tools',
+                        onPressed: editing || _busy ? null : _showTools,
+                        icon: const Icon(Icons.more_vert_rounded, size: 21),
+                      ),
                     ],
                   ),
                   if (_searching && _searcher != null) _SearchBar(controller: _searchField, searcher: _searcher!, onClose: _toggleSearch),

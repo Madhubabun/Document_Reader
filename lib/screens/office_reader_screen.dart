@@ -38,9 +38,12 @@ Object _parse((DocKind, Uint8List) input) => switch (input.$1) {
 
 /// Reader for Word, Excel and PowerPoint files.
 class OfficeReaderScreen extends StatefulWidget {
-  const OfficeReaderScreen({super.key, required this.file});
+  const OfficeReaderScreen({super.key, required this.file, this.startEditing = false});
 
   final DocFile file;
+
+  /// Opens straight into editing, for a document just created.
+  final bool startEditing;
 
   @override
   State<OfficeReaderScreen> createState() => _OfficeReaderScreenState();
@@ -55,7 +58,7 @@ class _OfficeReaderScreenState extends State<OfficeReaderScreen> {
   // app goes to the background, and when the reader closes.
   late DocFile _file = widget.file;
   DocumentEditor? _editor;
-  bool _editing = false;
+  late bool _editing = widget.startEditing;
   String? _saveNote;
   Timer? _saveTimer;
   Future<void> _saving = Future.value();

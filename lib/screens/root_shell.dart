@@ -1,11 +1,19 @@
+import 'dart:io';
+
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
+import '../app_scope.dart';
+import '../models/doc_file.dart';
 import '../services/document_actions.dart';
+import '../services/incoming_files.dart';
 import '../theme/app_theme.dart';
 import '../widgets/glass.dart';
 import 'convert_screen.dart';
+import 'create_sheet.dart';
 import 'files_screen.dart';
 import 'home_screen.dart';
+import 'images_to_pdf_screen.dart';
 import 'settings_screen.dart';
 
 enum AppTab { home, files, convert, settings }
@@ -20,6 +28,57 @@ class RootShell extends StatefulWidget {
 
 class _RootShellState extends State<RootShell> {
   AppTab _tab = AppTab.home;
+  late final _incoming = IncomingFiles(_receive)..start();
+
+  @override
+  void initState() {
+    super.initState();
+    _incoming;
+  }
+
+  @override
+  void dispose() {
+    _incoming.stop();
+    super.dispose();
+  }
+
+  /// Opens files from other apps: documents go into the library and the
+  /// first one opens; pictures go to "Pictures to PDF".
+  Future<void> _receive(List<IncomingFile> files) async {
+    final library = AppScope.of(context).library;
+    final messenger = ScaffoldMessenger.of(context);
+    final navigator = Navigator.of(context);
+    final documents = <DocFile>[];
+    final pictures = <Uint8List>[];
+    var skipped = 0;
+    for (final f in files) {
+      try {
+        final ext = f.name.contains('.') ? f.name.split('.').last.toLowerCase() : '';
+        if (f.isImage) {
+          pictures.add(await File(f.path).readAsBytes());
+        } else if (supportedExtensions.contains(ext)) {
+          documents.add(await library.importBytes(f.name, await File(f.path).readAsBytes()));
+        } else {
+          skipped++;
+        }
+      } catch (_) {
+        skipped++;
+      } finally {
+        await f.discard();
+      }
+    }
+    if (!mounted) return;
+    if (skipped > 0) {
+      messenger.showSnackBar(SnackBar(content: Text(skipped == 1 ? 'One file could not be opened.' : '$skipped files could not be opened.')));
+    }
+    if (pictures.isNotEmpty) {
+      if (documents.isNotEmpty) messenger.showSnackBar(SnackBar(content: Text('Added ${documents.length} ${documents.length == 1 ? 'file' : 'files'} to your library.')));
+      await navigator.push(MaterialPageRoute<void>(builder: (_) => ImagesToPdfScreen(initial: pictures)));
+    } else if (documents.isNotEmpty) {
+      if (documents.length > 1) messenger.showSnackBar(SnackBar(content: Text('Added ${documents.length} files. Opening the first.')));
+      await openDocument(context, documents.first);
+    }
+  }
 
   void _select(AppTab tab) => setState(() => _tab = tab);
 
@@ -38,7 +97,7 @@ class _RootShellState extends State<RootShell> {
           ],
         ),
       ),
-      bottomNavigationBar: GlassTabBar(current: _tab, onSelect: _select, onAdd: () => importDocuments(context)),
+      bottomNavigationBar: GlassTabBar(current: _tab, onSelect: _select, onAdd: () => showCreateSheet(context)),
     );
   }
 }

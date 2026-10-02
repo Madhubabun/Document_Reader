@@ -148,6 +148,9 @@ class PptxWriter {
     return b.toString();
   }
 
+  /// The Calibri-based Office theme new presentations use.
+  static String get officeTheme => _theme;
+
   static final _theme = () {
     String c(String name, String hex) => '<a:$name><a:srgbClr val="$hex"/></a:$name>';
     const solid = '<a:solidFill><a:schemeClr val="phClr"/></a:solidFill>';

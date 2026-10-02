@@ -6,6 +6,8 @@ import '../services/document_actions.dart';
 import '../theme/app_theme.dart';
 import '../widgets/doc_tiles.dart';
 import '../widgets/glass.dart';
+import 'create_sheet.dart';
+import 'pdf_tools_screen.dart';
 import 'root_shell.dart';
 
 enum HomeFilter {
@@ -239,11 +241,12 @@ class _QuickActions extends StatelessWidget {
         );
     return Row(
       children: [
-        tile('Scan', Icons.document_scanner_outlined, const Color(0xFF67E8F9), () {
-          showComingSoon(context, 'Scan to text', 'Point your camera at a page and get editable text (OCR). This is the next big feature on the list.');
-        }),
+        tile('Scan', Icons.document_scanner_outlined, const Color(0xFF67E8F9), () => startScan(context)),
         const SizedBox(width: 10),
-        tile('Import', Icons.file_download_outlined, const Color(0xFFA78BFA), () => importDocuments(context)),
+        tile('New', Icons.note_add_outlined, const Color(0xFF2FD27A), () => showCreateSheet(context)),
+        const SizedBox(width: 10),
+        tile('Tools', Icons.handyman_outlined, const Color(0xFFA78BFA),
+            () => Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => const PdfToolsScreen()))),
         const SizedBox(width: 10),
         tile('Convert', Icons.swap_horiz_rounded, const Color(0xFF7AA2FF), onConvert),
       ],

@@ -55,12 +55,17 @@ class XlsxWriter {
     final byRow = <int, List<(int, XlsxCell)>>{};
     sheet.cells.forEach((key, cell) => byRow.putIfAbsent(key.$1, () => []).add((key.$2, cell)));
     final b = StringBuffer('<worksheet xmlns="$_main" xmlns:r="$_r">');
-    if (sheet.columnCount > 0) {
-      // Width in characters from the longest value per column, capped.
-      final widths = List<int>.filled(sheet.columnCount, 8);
+    final columns = sheet.columnWidths.keys.fold(sheet.columnCount, (m, c) => c + 1 > m ? c + 1 : m);
+    if (columns > 0) {
+      // Width in characters from the longest value per column, capped,
+      // unless the sheet sets a wider one.
+      final widths = List<num>.filled(columns, 8);
       sheet.cells.forEach((key, cell) {
         final len = cell.value.length + 2;
         if (len > widths[key.$2]) widths[key.$2] = len > 60 ? 60 : len;
+      });
+      sheet.columnWidths.forEach((c, w) {
+        if (c >= 0 && w > widths[c]) widths[c] = w;
       });
       b.write('<cols>');
       for (var c = 0; c < widths.length; c++) {

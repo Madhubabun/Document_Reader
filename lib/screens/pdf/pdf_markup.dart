@@ -305,7 +305,7 @@ class _MarkupPainter extends CustomPainter {
             }
             canvas.drawPath(path, paint);
           }
-        case ImageEdit() || FieldEdit():
+        case ImageEdit() || FieldEdit() || TextLayerEdit():
           break;
       }
     }

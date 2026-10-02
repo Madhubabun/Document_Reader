@@ -184,4 +184,32 @@ void main() {
     final source = File('test/fixtures/locked.pdf').readAsBytesSync();
     await expectLater(applyPdfEdits(source, [half(1, const Rect.fromLTWH(0.1, 0.1, 0.5, 0.1))], password: 'nope'), throwsA(isA<StateError>()));
   }, skip: pdfium == null);
+
+  test('an invisible text layer makes scanned pages searchable', () async {
+    final source = await blankPdf();
+    const line = Rect.fromLTWH(0.2, 0.3, 0.5, 0.05);
+    final out = await applyPdfEdits(source, [
+      const TextLayerEdit(1, lines: [(text: 'Invoice total 42', rect: line), (text: '  ', rect: line)]),
+      const TextLayerEdit(2, lines: [(text: 'Turned page words', rect: line)]),
+    ]);
+    keep('text-layer.pdf', out);
+    final doc = await PdfDocument.openData(out);
+    for (final (n, words) in [(1, 'Invoice total 42'), (2, 'Turned page words')]) {
+      final page = doc.pages[n - 1];
+      final text = (await page.loadText())!;
+      expect(text.fullText.trim(), words);
+      // The words sit over the box they were read from.
+      final first = text.charRects.first.toRect(page: page);
+      final last = text.charRects.last.toRect(page: page);
+      expect(first.left / page.width, closeTo(line.left, 0.03), reason: 'page $n');
+      expect(last.right / page.width, closeTo(line.right, 0.03), reason: 'page $n');
+      expect(first.center.dy / page.height, closeTo(line.center.dy, 0.03), reason: 'page $n');
+      // And nothing shows.
+      expect((await redAt(doc, n))(0.3, 0.32), isFalse);
+      final image = (await page.render(fullWidth: 100, fullHeight: 140, width: 100, height: 140, backgroundColor: 0xFFFFFFFF))!;
+      expect(image.pixels.every((b) => b == 255), isTrue, reason: 'page $n stays blank');
+      image.dispose();
+    }
+    await doc.dispose();
+  }, skip: pdfium == null);
 }

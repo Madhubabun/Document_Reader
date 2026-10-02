@@ -98,20 +98,32 @@ class LibraryStore extends ChangeNotifier {
     if (deleteFile && p.isWithin(_libraryDir.path, file.path)) {
       final f = File(file.path);
       if (await f.exists()) await f.delete();
+      // Its earlier versions go too, so a new file with the same name
+      // doesn't inherit them.
+      final versions = _versionsDir(file);
+      if (await versions.exists()) await versions.delete(recursive: true);
     }
   }
 
   /// How many earlier versions of each edited file are kept.
   static const keepVersions = 10;
 
+  Directory _versionsDir(DocFile file) => Directory(p.join(_libraryDir.path, '.versions', p.basename(file.path)));
+
   /// Replaces [file]'s contents with [bytes] after keeping a copy of the
   /// current contents in `.versions`, so an edit can always be rolled back.
   /// The new contents are written to a temporary file first and then moved
   /// into place, so an interrupted save never leaves a half-written file.
-  Future<DocFile> saveEdited(DocFile file, List<int> bytes) async {
+  ///
+  /// [dropHistory] deletes the earlier versions instead, for changes such as
+  /// adding a password, where an old copy would undo the point.
+  Future<DocFile> saveEdited(DocFile file, List<int> bytes, {bool dropHistory = false}) async {
     final target = File(file.path);
-    if (await target.exists()) {
-      final dir = Directory(p.join(_libraryDir.path, '.versions', p.basename(file.path)));
+    if (dropHistory) {
+      final dir = _versionsDir(file);
+      if (await dir.exists()) await dir.delete(recursive: true);
+    } else if (await target.exists()) {
+      final dir = _versionsDir(file);
       await dir.create(recursive: true);
       final stamp = DateTime.now().toIso8601String().replaceAll(RegExp(r'[:.]'), '-');
       await target.copy(p.join(dir.path, '$stamp${p.extension(file.path)}'));
@@ -136,7 +148,7 @@ class LibraryStore extends ChangeNotifier {
 
   /// Earlier versions of [file], newest first.
   Future<List<File>> versionsOf(DocFile file) async {
-    final dir = Directory(p.join(_libraryDir.path, '.versions', p.basename(file.path)));
+    final dir = _versionsDir(file);
     if (!await dir.exists()) return [];
     return (await dir.list().toList()).whereType<File>().toList()..sort((a, b) => b.path.compareTo(a.path));
   }
@@ -147,4 +159,16 @@ class LibraryStore extends ChangeNotifier {
     }
     return null;
   }
+}
+
+/// A file name (without extension) safe on Android and iOS: characters the
+/// file system rejects become dashes, a typed [extension] is dropped, and an
+/// empty result falls back to [fallback].
+String safeBaseName(String raw, {required String fallback, String? extension}) {
+  var name = raw.trim().replaceAll(RegExp(r'[\\/:*?"<>|\x00-\x1F]'), '-');
+  if (extension != null) name = name.replaceAll(RegExp('\\.${RegExp.escape(extension)}\$', caseSensitive: false), '');
+  // Leading dots would hide the file.
+  name = name.replaceFirst(RegExp(r'^[.\s]+'), '').trim();
+  if (name.length > 120) name = name.substring(0, 120).trim();
+  return name.isEmpty ? fallback : name;
 }
