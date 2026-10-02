@@ -97,6 +97,46 @@ class LibraryStore extends ChangeNotifier {
     }
   }
 
+  /// How many earlier versions of each edited file are kept.
+  static const keepVersions = 10;
+
+  /// Replaces [file]'s contents with [bytes] after keeping a copy of the
+  /// current contents in `.versions`, so an edit can always be rolled back.
+  /// The new contents are written to a temporary file first and then moved
+  /// into place, so an interrupted save never leaves a half-written file.
+  Future<DocFile> saveEdited(DocFile file, List<int> bytes) async {
+    final target = File(file.path);
+    if (await target.exists()) {
+      final dir = Directory(p.join(_libraryDir.path, '.versions', p.basename(file.path)));
+      await dir.create(recursive: true);
+      final stamp = DateTime.now().toIso8601String().replaceAll(RegExp(r'[:.]'), '-');
+      await target.copy(p.join(dir.path, '$stamp${p.extension(file.path)}'));
+      final versions = (await dir.list().toList()).whereType<File>().toList()..sort((a, b) => b.path.compareTo(a.path));
+      for (final old in versions.skip(keepVersions)) {
+        await old.delete();
+      }
+    }
+    final temp = File('${file.path}.saving');
+    await temp.writeAsBytes(bytes, flush: true);
+    await temp.rename(file.path);
+    final updated = file.copyWith(sizeBytes: bytes.length, openedAt: DateTime.now());
+    final i = _files.indexWhere((f) => f.path == file.path);
+    if (i >= 0) {
+      _files.removeAt(i);
+      _files.insert(0, updated);
+      notifyListeners();
+      await _save();
+    }
+    return updated;
+  }
+
+  /// Earlier versions of [file], newest first.
+  Future<List<File>> versionsOf(DocFile file) async {
+    final dir = Directory(p.join(_libraryDir.path, '.versions', p.basename(file.path)));
+    if (!await dir.exists()) return [];
+    return (await dir.list().toList()).whereType<File>().toList()..sort((a, b) => b.path.compareTo(a.path));
+  }
+
   DocFile? byPath(String path) {
     for (final f in _files) {
       if (f.path == path) return f;

@@ -1,18 +1,32 @@
 import 'package:xml/xml.dart';
 
+import 'xlsx_styles.dart';
 import 'xml_utils.dart';
 
-class XlsxCell {
-  const XlsxCell(this.value, {this.formula, this.isNumber = false});
+export 'xlsx_styles.dart' show XlsxCellStyle;
 
-  /// The cached display value as stored in the file.
+class XlsxCell {
+  const XlsxCell(this.value, {this.formula, this.isNumber = false, this.number, this.style = XlsxCellStyle.plain});
+
+  /// The display text: the cached value formatted with the cell's number format.
   final String value;
   final String? formula;
   final bool isNumber;
+
+  /// The stored number behind [value] when [isNumber] (unformatted).
+  final double? number;
+  final XlsxCellStyle style;
+
+  /// Text to put back into a file: the raw number for numeric cells.
+  String get rawValue {
+    final n = number;
+    if (!isNumber || n == null) return value;
+    return n == n.roundToDouble() && n.abs() < 1e15 ? n.toInt().toString() : n.toString();
+  }
 }
 
 class XlsxSheet {
-  XlsxSheet(this.name, this.cells)
+  XlsxSheet(this.name, this.cells, {this.columnWidths = const {}})
       : rowCount = cells.keys.fold(0, (m, k) => k.$1 + 1 > m ? k.$1 + 1 : m),
         columnCount = cells.keys.fold(0, (m, k) => k.$2 + 1 > m ? k.$2 + 1 : m);
 
@@ -22,6 +36,9 @@ class XlsxSheet {
   final Map<(int, int), XlsxCell> cells;
   final int rowCount;
   final int columnCount;
+
+  /// Column widths in Excel character units, for columns that set one.
+  final Map<int, double> columnWidths;
 
   XlsxCell? cell(int row, int col) => cells[(row, col)];
 }
@@ -40,14 +57,9 @@ class XlsxReader {
     final workbook = pkg.xml(workbookPart);
     if (workbook == null) throw OoxmlFormatException('Not an Excel workbook (xl/workbook.xml missing).');
 
-    final shared = <String>[];
-    final sst = pkg.xml('xl/sharedStrings.xml');
-    if (sst != null) {
-      for (final si in sst.rootElement.kids('si')) {
-        // Rich text runs keep text in r/t; phonetic hints (rPh) are not displayed.
-        shared.add(si.deep('t').where((t) => t.parentElement?.name.local != 'rPh').map((t) => t.innerText).join());
-      }
-    }
+    final shared = readSharedStrings(pkg.xml('xl/sharedStrings.xml'));
+    final styles = XlsxStyles.parse(pkg.xml('xl/styles.xml'));
+    final date1904 = workbook.rootElement.kid('workbookPr')?.attr('date1904') == '1';
 
     final rels = pkg.relationships(workbookPart);
     final sheets = <XlsxSheet>[];
@@ -56,43 +68,73 @@ class XlsxReader {
       final target = rels[s.relId];
       final sheetXml = target == null ? null : pkg.xml(target);
       if (sheetXml == null) continue;
-      final cells = <(int, int), XlsxCell>{};
-      final data = sheetXml.rootElement.kid('sheetData');
-      var rowIndex = -1;
-      for (final row in data?.kids('row') ?? const <Never>[]) {
-        rowIndex = (int.tryParse(row.attr('r') ?? '') ?? rowIndex + 2) - 1;
-        var colIndex = -1;
-        for (final c in row.kids('c')) {
-          final ref = c.attr('r');
-          final parsed = ref == null ? null : parseCellRef(ref);
-          colIndex = parsed?.$2 ?? colIndex + 1;
-          final type = c.attr('t');
-          final raw = c.kid('v')?.innerText;
-          final formula = c.kid('f')?.innerText;
-          String value;
-          switch (type) {
-            case 's':
-              final i = int.tryParse(raw ?? '');
-              value = (i != null && i >= 0 && i < shared.length) ? shared[i] : '';
-            case 'inlineStr':
-              value = c.deep('t').map((t) => t.innerText).join();
-            case 'b':
-              value = raw == '1' ? 'TRUE' : 'FALSE';
-            default:
-              value = raw ?? '';
-          }
-          if (value.isEmpty && (formula == null || formula.isEmpty)) continue;
-          final isNumber = (type == null || type == 'n') && raw != null && raw.isNotEmpty;
-          cells[(parsed?.$1 ?? rowIndex, colIndex)] = XlsxCell(
-            isNumber ? formatNumber(value) : value,
-            formula: (formula == null || formula.isEmpty) ? null : formula,
-            isNumber: isNumber,
-          );
-        }
-      }
-      sheets.add(XlsxSheet(s.attr('name') ?? 'Sheet ${sheets.length + 1}', cells));
+      sheets.add(readSheet(s.attr('name') ?? 'Sheet ${sheets.length + 1}', sheetXml.rootElement, shared, styles, date1904: date1904));
     }
     return XlsxWorkbook(sheets);
+  }
+
+  static List<String> readSharedStrings(XmlDocument? sst) => [
+        // Rich text runs keep text in r/t; phonetic hints (rPh) are not displayed.
+        for (final si in sst?.rootElement.kids('si') ?? const <XmlElement>[])
+          si.deep('t').where((t) => t.parentElement?.name.local != 'rPh').map((t) => t.innerText).join(),
+      ];
+
+  /// Reads one worksheet's cells, formats and column widths.
+  static XlsxSheet readSheet(String name, XmlElement worksheet, List<String> shared, XlsxStyles styles, {bool date1904 = false}) {
+    final cells = <(int, int), XlsxCell>{};
+    final data = worksheet.kid('sheetData');
+    var rowIndex = -1;
+    for (final row in data?.kids('row') ?? const <Never>[]) {
+      rowIndex = (int.tryParse(row.attr('r') ?? '') ?? rowIndex + 2) - 1;
+      var colIndex = -1;
+      for (final c in row.kids('c')) {
+        final ref = c.attr('r');
+        final parsed = ref == null ? null : parseCellRef(ref);
+        colIndex = parsed?.$2 ?? colIndex + 1;
+        final cell = readCell(c, shared, styles, date1904: date1904);
+        if (cell != null) cells[(parsed?.$1 ?? rowIndex, colIndex)] = cell;
+      }
+    }
+    final widths = <int, double>{};
+    for (final col in worksheet.kid('cols')?.kids('col') ?? const <XmlElement>[]) {
+      final min = int.tryParse(col.attr('min') ?? '');
+      final max = int.tryParse(col.attr('max') ?? '');
+      final width = double.tryParse(col.attr('width') ?? '');
+      if (min == null || max == null || width == null) continue;
+      for (var i = min; i <= max && i <= min + 200; i++) {
+        widths[i - 1] = col.attr('hidden') == '1' ? 0 : width;
+      }
+    }
+    return XlsxSheet(name, cells, columnWidths: widths);
+  }
+
+  /// One `<c>` element, or null when it holds nothing to show.
+  static XlsxCell? readCell(XmlElement c, List<String> shared, XlsxStyles styles, {bool date1904 = false}) {
+    final type = c.attr('t');
+    final raw = c.kid('v')?.innerText;
+    final formula = c.kid('f')?.innerText;
+    final style = styles[int.tryParse(c.attr('s') ?? '') ?? 0];
+    String value;
+    switch (type) {
+      case 's':
+        final i = int.tryParse(raw ?? '');
+        value = (i != null && i >= 0 && i < shared.length) ? shared[i] : '';
+      case 'inlineStr':
+        value = c.deep('t').map((t) => t.innerText).join();
+      case 'b':
+        value = raw == '1' ? 'TRUE' : 'FALSE';
+      default:
+        value = raw ?? '';
+    }
+    if (value.isEmpty && (formula == null || formula.isEmpty) && style.fill == null) return null;
+    final number = (type == null || type == 'n') && raw != null && raw.isNotEmpty ? double.tryParse(raw) : null;
+    return XlsxCell(
+      number != null ? formatExcelNumber(number, style, date1904: date1904) : value,
+      formula: (formula == null || formula.isEmpty) ? null : formula,
+      isNumber: number != null,
+      number: number,
+      style: style,
+    );
   }
 
   /// `B3` -> (2, 1), zero-based (row, column).

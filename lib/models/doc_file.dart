@@ -56,10 +56,10 @@ class DocFile {
 
   String get displayName => p.basenameWithoutExtension(name);
 
-  DocFile copyWith({DateTime? openedAt, bool? favorite}) => DocFile(
+  DocFile copyWith({DateTime? openedAt, bool? favorite, int? sizeBytes}) => DocFile(
         path: path,
         name: name,
-        sizeBytes: sizeBytes,
+        sizeBytes: sizeBytes ?? this.sizeBytes,
         openedAt: openedAt ?? this.openedAt,
         favorite: favorite ?? this.favorite,
       );

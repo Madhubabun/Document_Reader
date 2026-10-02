@@ -4,8 +4,10 @@ import 'dart:io';
 import 'package:archive/archive.dart';
 import 'package:doc_reader/app_scope.dart';
 import 'package:doc_reader/models/doc_file.dart';
+import 'package:doc_reader/screens/office_reader_screen.dart';
 import 'package:doc_reader/screens/pdf_reader_screen.dart';
 import 'package:doc_reader/services/ooxml/pptx_reader.dart';
+import 'package:doc_reader/services/ooxml/xlsx_reader.dart';
 import 'package:doc_reader/services/library_store.dart';
 import 'package:doc_reader/services/settings_store.dart';
 import 'package:doc_reader/theme/app_theme.dart';
@@ -107,4 +109,72 @@ void main() {
     await tester.pump(const Duration(seconds: 5)); // let the viewer's timers finish
     dir.deleteSync(recursive: true);
   }, skip: pdfium == null);
+
+  testWidgets('Excel cells can be edited, zoomed and are saved with a backup', (tester) async {
+    SharedPreferences.setMockInitialValues({});
+    final prefs = await SharedPreferences.getInstance();
+    final dir = Directory.systemTemp.createTempSync('xlsx_edit');
+    final library = LibraryStore(prefs, dir);
+    late DocFile file;
+    await tester.runAsync(() async => file = await library.importBytes('Budget.xlsx', File('test/fixtures/edit.xlsx').readAsBytesSync()));
+    await tester.binding.setSurfaceSize(const Size(430, 900));
+    await tester.pumpWidget(AppScope(
+      library: library,
+      settings: SettingsStore(prefs),
+      child: MaterialApp(theme: AppTheme.dark(), home: OfficeReaderScreen(file: file)),
+    ));
+    for (var i = 0; i < 50 && find.text('Pens').evaluate().isEmpty; i++) {
+      await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 50)));
+      await tester.pump();
+    }
+    expect(find.text('Pens'), findsOneWidget);
+
+    // Tap B2 to select it, tap again to type, and press Enter.
+    Finder cell(String text) => find.byWidgetPredicate((w) => w is Text && w.data == text && w.style?.fontFamily == 'Calibri');
+    await tester.tap(cell('10'));
+    await tester.pump();
+    await tester.tap(cell('10'));
+    await tester.pump();
+    await tester.enterText(find.byKey(const ValueKey('formula-bar')), '20');
+    await tester.testTextInput.receiveAction(TextInputAction.done);
+    await tester.pump();
+    expect(cell('50'), findsOneWidget); // D2 = B2 * C2
+    expect(cell('146'), findsOneWidget); // D5 = SUM(D2:D4)
+
+    // Bold from the toolbar.
+    await tester.tap(cell('Pens'));
+    await tester.pump();
+    await tester.tap(find.byTooltip('Bold'));
+    await tester.pump();
+    expect(tester.widget<Text>(cell('Pens')).style!.fontWeight, FontWeight.w700);
+
+    // Pinch out to zoom in.
+    final before = tester.getRect(cell('Pens')).width;
+    final center = tester.getCenter(cell('Paper'));
+    final a = await tester.startGesture(center - const Offset(30, 0));
+    final b = await tester.startGesture(center + const Offset(30, 0), pointer: 7);
+    for (var i = 1; i <= 5; i++) {
+      await a.moveTo(center - Offset(30.0 + i * 12, 0));
+      await b.moveTo(center + Offset(30.0 + i * 12, 0));
+      await tester.pump();
+    }
+    await a.up();
+    await b.up();
+    await tester.pump();
+    expect(tester.getRect(cell('Pens')).width, greaterThan(before * 1.5));
+
+    // Closing the reader saves, keeping the original as a backup.
+    await tester.pumpWidget(const SizedBox());
+    for (var i = 0; i < 40 && library.byPath(file.path)!.sizeBytes == file.sizeBytes; i++) {
+      await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 50)));
+      await tester.pump();
+    }
+    final saved = XlsxReader.read(File(file.path).readAsBytesSync());
+    expect(saved.sheets.first.cell(1, 1)!.value, '20');
+    expect(saved.sheets.first.cell(1, 0)!.style.bold, isTrue);
+    final versions = (await tester.runAsync(() => library.versionsOf(file)))!;
+    expect(XlsxReader.read(versions.last.readAsBytesSync()).sheets.first.cell(1, 1)!.value, '10');
+    await tester.binding.setSurfaceSize(null);
+    dir.deleteSync(recursive: true);
+  });
 }

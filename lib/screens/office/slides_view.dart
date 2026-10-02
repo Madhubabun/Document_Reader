@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import '../../services/ooxml/pptx_reader.dart';
 import '../../theme/app_theme.dart';
 import '../../widgets/glass.dart';
+import '../../widgets/pinch_zoom.dart';
 import 'word_view.dart';
 
 /// Scrollable list of slides; tap one to present full screen.
@@ -71,31 +72,40 @@ class _SlidesViewState extends State<SlidesView> {
     final pres = widget.presentation;
     widget.onStatus('${pres.slides.length} ${pres.slides.length == 1 ? 'slide' : 'slides'}');
     final p = context.palette;
-    return ListView.separated(
-      controller: _scroll,
-      padding: EdgeInsets.fromLTRB(16, MediaQuery.paddingOf(context).top + 92, 16, 140),
-      itemCount: pres.slides.length,
-      separatorBuilder: (_, _) => const SizedBox(height: 18),
-      itemBuilder: (context, i) => Column(
-        key: _keys[i],
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          GestureDetector(
-            onTap: () => Navigator.of(context).push(MaterialPageRoute<void>(
-              fullscreenDialog: true,
-              builder: (_) => PresentationScreen(presentation: pres, initialSlide: i),
-            )),
-            child: DecoratedBox(
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(8),
-                boxShadow: [BoxShadow(color: FileColors.powerpoint.withValues(alpha: 0.18 * p.glowOpacity), blurRadius: 30)],
+    return Padding(
+      padding: EdgeInsets.only(top: MediaQuery.paddingOf(context).top + 84),
+      child: PinchZoom(
+        minZoom: 1,
+        panHorizontally: true,
+        vertical: _scroll,
+        builder: (context, pinching) => ListView.separated(
+          controller: _scroll,
+          physics: pinching ? const NeverScrollableScrollPhysics() : null,
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 140),
+          itemCount: pres.slides.length,
+          separatorBuilder: (_, _) => const SizedBox(height: 18),
+          itemBuilder: (context, i) => Column(
+            key: _keys[i],
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              GestureDetector(
+                onTap: () => Navigator.of(context).push(MaterialPageRoute<void>(
+                  fullscreenDialog: true,
+                  builder: (_) => PresentationScreen(presentation: pres, initialSlide: i),
+                )),
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(8),
+                    boxShadow: [BoxShadow(color: FileColors.powerpoint.withValues(alpha: 0.18 * p.glowOpacity), blurRadius: 30)],
+                  ),
+                  child: ClipRRect(borderRadius: BorderRadius.circular(8), child: SlideCanvas(presentation: pres, slide: pres.slides[i])),
+                ),
               ),
-              child: ClipRRect(borderRadius: BorderRadius.circular(8), child: SlideCanvas(presentation: pres, slide: pres.slides[i])),
-            ),
+              const SizedBox(height: 6),
+              Text('${i + 1}', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: p.textMuted)),
+            ],
           ),
-          const SizedBox(height: 6),
-          Text('${i + 1}', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: p.textMuted)),
-        ],
+        ),
       ),
     );
   }
@@ -255,7 +265,7 @@ class _PresentationScreenState extends State<PresentationScreen> {
             controller: _pages,
             itemCount: slides.length,
             onPageChanged: (i) => setState(() => _index = i),
-            itemBuilder: (context, i) => Center(child: SlideCanvas(presentation: widget.presentation, slide: slides[i])),
+            itemBuilder: (context, i) => _ZoomableSlide(presentation: widget.presentation, slide: slides[i]),
           ),
           SafeArea(
             child: Align(
@@ -276,6 +286,46 @@ class _PresentationScreenState extends State<PresentationScreen> {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// One presented slide that can be pinched to zoom and then panned around.
+class _ZoomableSlide extends StatefulWidget {
+  const _ZoomableSlide({required this.presentation, required this.slide});
+
+  final PptxPresentation presentation;
+  final PptxSlide slide;
+
+  @override
+  State<_ZoomableSlide> createState() => _ZoomableSlideState();
+}
+
+class _ZoomableSlideState extends State<_ZoomableSlide> {
+  final _vertical = ScrollController();
+
+  @override
+  void dispose() {
+    _vertical.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return PinchZoom(
+      minZoom: 1,
+      panHorizontally: true,
+      vertical: _vertical,
+      builder: (context, pinching) => LayoutBuilder(
+        builder: (context, box) => SingleChildScrollView(
+          controller: _vertical,
+          physics: pinching ? const NeverScrollableScrollPhysics() : null,
+          child: ConstrainedBox(
+            constraints: BoxConstraints(minHeight: box.maxHeight),
+            child: Center(child: SlideCanvas(presentation: widget.presentation, slide: widget.slide)),
+          ),
+        ),
       ),
     );
   }

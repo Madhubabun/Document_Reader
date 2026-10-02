@@ -44,6 +44,21 @@ void main() {
     expect(File(a.path).existsSync(), isFalse);
   });
 
+  test('saving an edit keeps earlier versions and updates the entry', () async {
+    final prefs = await SharedPreferences.getInstance();
+    final store = LibraryStore(prefs, dir);
+    final a = await store.importBytes('sheet.xlsx', [1]);
+    for (var i = 2; i < 15; i++) {
+      await store.saveEdited(store.byPath(a.path)!, List.filled(i, i));
+    }
+    expect(File(a.path).readAsBytesSync(), List.filled(14, 14));
+    expect(store.byPath(a.path)!.sizeBytes, 14);
+    final versions = await store.versionsOf(a);
+    expect(versions, hasLength(LibraryStore.keepVersions));
+    expect(versions.first.readAsBytesSync(), List.filled(13, 13));
+    expect(File('${a.path}.saving').existsSync(), isFalse);
+  });
+
   test('load drops entries whose file is gone', () async {
     final prefs = await SharedPreferences.getInstance();
     final store = LibraryStore(prefs, dir);
