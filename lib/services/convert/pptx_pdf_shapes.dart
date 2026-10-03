@@ -43,6 +43,9 @@ class PptxPdfImages {
   }
 
   static pw.ImageProvider? _processed(Uint8List bytes, List<double>? matrix, (double, double)? tileBox) {
+    // Very large pictures are kept as they are rather than decoded in memory.
+    final info = img.findDecoderForData(bytes)?.startDecode(bytes);
+    if (info == null || info.width * info.height > 40 * 1000 * 1000) return pw.MemoryImage(bytes);
     var image = img.decodeImage(bytes);
     if (image == null) return null;
     // Keep work and file size bounded on big photos.
@@ -53,8 +56,11 @@ class PptxPdfImages {
     if (tileBox != null) image = _tiled(image, tileBox.$1, tileBox.$2);
     final seeThrough = matrix != null && !(matrix[15] == 0 && matrix[16] == 0 && matrix[17] == 0 && matrix[18] == 1 && matrix[19] == 0);
     if (matrix != null) {
-      if (seeThrough && image.numChannels < 4) image = image.convert(numChannels: 4);
       if (image.hasPalette) image = image.convert(numChannels: image.numChannels);
+      // Grey pictures need colour channels to take on the new colours.
+      if (image.numChannels < 3 || (seeThrough && image.numChannels < 4)) {
+        image = image.convert(numChannels: seeThrough || image.numChannels == 2 || image.numChannels == 4 ? 4 : 3);
+      }
       final m = matrix;
       for (final p in image) {
         final r = p.rNormalized * 255, g = p.gNormalized * 255, b = p.bNormalized * 255, a = p.aNormalized * 255;

@@ -543,10 +543,14 @@ class SlideCanvas extends StatelessWidget {
                 : slide.background != null
                     ? PptxFill.solid(PptxColor(slide.background!))
                     : null);
+        // White under see-through backgrounds, as in PowerPoint and the PDF export.
         return ClipRect(
-          child: Container(
-            decoration: ShapeFill.decoration(background, scale) ?? const BoxDecoration(color: Colors.white),
-            child: Stack(clipBehavior: Clip.hardEdge, children: children),
+          child: ColoredBox(
+            color: Colors.white,
+            child: Container(
+              decoration: ShapeFill.decoration(background, scale),
+              child: Stack(clipBehavior: Clip.hardEdge, children: children),
+            ),
           ),
         );
       }),

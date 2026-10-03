@@ -532,9 +532,11 @@ class PptxReader {
                 inGroup: true, transform: transform.then(_Transform(frame.x.toDouble(), 1, frame.y.toDouble(), 1)));
           }
         case 'AlternateContent':
-          // Newer content with a fallback for older readers: use the fallback.
+          // Newer content with a fallback for older readers: draw the fallback.
+          // PowerPoint shows the other branch, so edits here would be lost:
+          // these shapes are shown but not editable.
           final branch = el.kid('Fallback') ?? el.kid('Choice');
-          if (branch != null) _collect(branch, out, ctx, elements: elements, inGroup: inGroup, transform: transform, groupFill: groupFill);
+          if (branch != null) _collect(branch, out, ctx, elements: null, inGroup: inGroup, transform: transform, groupFill: groupFill);
       }
     }
   }
@@ -672,7 +674,7 @@ class PptxReader {
           return ln == null ? fallback : _cellLine(ln, colors);
         }
 
-        final span = int.tryParse(tc.attr('gridSpan') ?? '') ?? 1;
+        final span = math.max(1, int.tryParse(tc.attr('gridSpan') ?? '') ?? 1);
         // The table style's text colour wins over the deck's default text colour.
         final level = _Level(bold: bold, fill: textColor == null ? null : XmlDocument.parse('<solidFill><srgbClr val="$textColor"/></solidFill>').rootElement);
         final chain = [
@@ -684,7 +686,7 @@ class PptxReader {
           paragraphs: [for (final p in tc.kid('txBody')?.kids('p') ?? const <XmlElement>[]) _paragraph(p, chain, colors, null, bulletByDefault: false)],
           fill: fill,
           columnSpan: span,
-          rowSpan: int.tryParse(tc.attr('rowSpan') ?? '') ?? 1,
+          rowSpan: math.max(1, int.tryParse(tc.attr('rowSpan') ?? '') ?? 1),
           merged: _isTrue(tc.attr('hMerge')) || _isTrue(tc.attr('vMerge')),
           left: border('lnL', side('left', 'insideV', c == 0)),
           right: border('lnR', side('right', 'insideV', c + span >= cellEls.length)),

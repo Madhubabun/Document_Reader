@@ -74,8 +74,8 @@ class PptxGeometry {
     if (cust == null) return null;
     final paths = <CustomPath>[];
     for (final p in cust.kid('pathLst')?.kids('path') ?? const <XmlElement>[]) {
-      final w = double.tryParse(p.attr('w') ?? '') ?? 0;
-      final h = double.tryParse(p.attr('h') ?? '') ?? 0;
+      final w = _number(p.attr('w')) ?? 0;
+      final h = _number(p.attr('h')) ?? 0;
       final ops = <(String, List<double>)>[];
       var ok = true;
       for (final step in p.childElements) {
@@ -83,14 +83,14 @@ class PptxGeometry {
         final name = step.name.local;
         if (name == 'arcTo') {
           for (final a in const ['wR', 'hR', 'stAng', 'swAng']) {
-            final v = double.tryParse(step.attr(a) ?? '');
+            final v = _number(step.attr(a));
             if (v == null) ok = false;
             values.add(v ?? 0);
           }
         } else {
           for (final pt in step.kids('pt')) {
-            final x = double.tryParse(pt.attr('x') ?? '');
-            final y = double.tryParse(pt.attr('y') ?? '');
+            final x = _number(pt.attr('x'));
+            final y = _number(pt.attr('y'));
             if (x == null || y == null) ok = false;
             values
               ..add(x ?? 0)
@@ -269,7 +269,8 @@ class CustomPath {
           // wR, hR, at angle stAng, and sweeps swAng (60000ths of a degree).
           final rx = v[0] * sx, ry = v[1] * sy;
           final start = v[2] / 60000 * math.pi / 180;
-          final sweep = v[3] / 60000 * math.pi / 180;
+          // At most one full turn.
+          final sweep = v[3].clamp(-21600000, 21600000) / 60000 * math.pi / 180;
           if (rx == 0 || ry == 0 || sweep == 0) break;
           final ox = cx - rx * math.cos(start), oy = cy - ry * math.sin(start);
           final pieces = math.max(1, (sweep.abs() / (math.pi / 2)).ceil());
@@ -291,4 +292,11 @@ class CustomPath {
     }
     return GeomPath(out, fill: fill, stroke: stroke);
   }
+}
+
+/// A whole number from a shape's outline, or null. The format only allows
+/// integers, which also keeps out NaN, Infinity and runaway sizes.
+double? _number(String? text) {
+  final v = int.tryParse(text?.trim() ?? '');
+  return v == null || v.abs() > 1 << 40 ? null : v.toDouble();
 }

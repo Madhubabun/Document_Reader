@@ -5,6 +5,7 @@ import 'dart:typed_data';
 import 'package:archive/archive.dart';
 import 'package:doc_reader/screens/office/slides_view.dart';
 import 'package:doc_reader/services/convert/office_to_pdf.dart';
+import 'package:doc_reader/services/convert/pptx_pdf_shapes.dart';
 import 'package:doc_reader/services/ooxml/pptx_geometry.dart';
 import 'package:doc_reader/services/ooxml/pptx_reader.dart';
 import 'package:flutter/material.dart';
@@ -13,6 +14,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'convert_test.dart' show testFonts;
 import 'package:doc_reader/services/ooxml/xml_utils.dart';
 import 'package:image/image.dart' as img;
+import 'package:pdf/widgets.dart' as pw;
 import 'package:pdfrx/pdfrx.dart';
 import 'package:xml/xml.dart';
 
@@ -84,6 +86,7 @@ List<int> duotoneDeck({Map<String, String Function(String xml)> more = const {}}
 }
 
 void main() {
+  edgeCases();
   test('pictures and shapes on the master show under every slide, unless hidden', () {
     final logo = '<p:pic><p:nvPicPr><p:cNvPr id="9" name="Logo"/><p:cNvPicPr/><p:nvPr/></p:nvPicPr>'
         '<p:blipFill><a:blip r:embed="rIdLogo"/><a:stretch><a:fillRect/></a:stretch></p:blipFill>'
@@ -254,5 +257,42 @@ void main() {
     expect(g, greaterThan(b + 20));
     expect(text, contains('Star'));
     expect(text, contains('Both'));
+  });
+}
+
+void edgeCases() {
+  test('odd numbers in outlines and tables do not break drawing', () async {
+    final arc = PptxGeometry.read(XmlDocument.parse('<p:spPr xmlns:p="p" $_a><a:custGeom><a:pathLst><a:path w="10" h="10"><a:moveTo><a:pt x="0" y="0"/></a:moveTo>'
+            '<a:arcTo wR="5" hR="5" stAng="0" swAng="NaN"/></a:path></a:pathLst></a:custGeom></p:spPr>').rootElement);
+    expect(arc, isNull);
+    final huge = PptxGeometry.read(XmlDocument.parse('<p:spPr xmlns:p="p" $_a><a:custGeom><a:pathLst><a:path w="10" h="10"><a:moveTo><a:pt x="0" y="0"/></a:moveTo>'
+            '<a:arcTo wR="5" hR="5" stAng="0" swAng="999999999999"/></a:path></a:pathLst></a:custGeom></p:spPr>').rootElement)!;
+    expect(huge.paths(10, 10).first.ops.length, lessThan(10));
+    final table = tableXml().replaceFirst('<a:tc gridSpan="2">', '<a:tc gridSpan="-1" rowSpan="0">');
+    final pres = PptxReader.read(patched(edits: {'ppt/slides/slide1.xml': slideShapes(table)}));
+    final cell = pres.slides.first.shapes.firstWhere((s) => s.table != null).table!.rows[1].cells.first;
+    expect((cell.columnSpan, cell.rowSpan), (1, 1));
+    expect(String.fromCharCodes((await pptxToPdf(pres, testFonts())).take(5)), '%PDF-');
+  });
+
+  test('grey pictures take on their new colours in the PDF', () {
+    final grey = Uint8List.fromList(img.encodePng(img.Image(width: 4, height: 4, numChannels: 1)..clear(img.ColorUint8.rgb(128, 128, 128))));
+    // Everything becomes pure red.
+    const red = <double>[0, 0, 0, 0, 255, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0];
+    final provider = PptxPdfImages().of(PptxFill.picture(grey, colorMatrix: red), 10, 10) as pw.MemoryImage;
+    final out = img.decodeImage(provider.bytes)!;
+    final p = out.getPixel(1, 1);
+    expect(p.r, greaterThan(245));
+    expect(p.g + p.b, lessThan(15));
+  });
+
+  test('shapes inside alternate content show but cannot be edited', () {
+    final alt = '<mc:AlternateContent xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"><mc:Choice Requires="p14">'
+        '${rectSp(60, '', text: 'Choice')}</mc:Choice><mc:Fallback>${rectSp(61, '', text: 'Fallback')}</mc:Fallback></mc:AlternateContent>';
+    final elements = <List<XmlElement>>[];
+    final pres = PptxReader.readFrom(OoxmlPackage(patched(edits: {'ppt/slides/slide1.xml': slideShapes(alt)})), slideParts: <String>[], shapeElements: elements);
+    final shape = pres.slides.first.shapes.firstWhere((s) => s.text == 'Fallback');
+    expect(shape.ref, isNull);
+    expect(elements.first, hasLength(2));
   });
 }
