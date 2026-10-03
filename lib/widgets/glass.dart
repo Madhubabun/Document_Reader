@@ -247,13 +247,17 @@ class NeonButton extends StatelessWidget {
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  Text(
-                    label,
-                    style: const TextStyle(
-                      fontFamily: AppTheme.displayFont,
-                      fontSize: 17,
-                      fontWeight: FontWeight.w700,
-                      color: Color(0xFF0B0B12),
+                  Flexible(
+                    child: Text(
+                      label,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontFamily: AppTheme.displayFont,
+                        fontSize: 17,
+                        fontWeight: FontWeight.w700,
+                        color: Color(0xFF0B0B12),
+                      ),
                     ),
                   ),
                   if (icon != null) ...[

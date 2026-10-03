@@ -10,11 +10,13 @@ import 'package:doc_reader/services/ooxml/docx_reader.dart';
 import 'package:doc_reader/services/ooxml/pptx_reader.dart';
 import 'package:doc_reader/services/ooxml/xlsx_reader.dart';
 import 'package:doc_reader/services/library_store.dart';
+import 'package:doc_reader/services/pdf_edits.dart';
 import 'package:doc_reader/services/settings_store.dart';
 import 'package:doc_reader/theme/app_theme.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:pdf/pdf.dart' show PdfPageFormat;
 import 'package:pdf/widgets.dart' as pw;
 import 'package:pdfrx/pdfrx.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -200,6 +202,177 @@ void main() {
       await doc.dispose();
       // Unsigned, the page only has a few dark pixels of text.
       expect(dark, greaterThan(150));
+    });
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump(const Duration(seconds: 5));
+    dir.deleteSync(recursive: true);
+  }, skip: pdfium == null);
+
+  /// Opens [path] in the PDF reader on a phone-sized screen.
+  Future<(LibraryStore, DocFile, Future<void> Function(bool Function()))> openPdf(WidgetTester tester, Directory dir, String path) async {
+    Pdfrx.pdfiumModulePath = pdfium;
+    tester.view.physicalSize = const Size(1080, 2340);
+    tester.view.devicePixelRatio = 3;
+    addTearDown(tester.view.reset);
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+      const MethodChannel('plugins.flutter.io/path_provider'),
+      (call) async => Directory.systemTemp.path,
+    );
+    SharedPreferences.setMockInitialValues({});
+    final prefs = await SharedPreferences.getInstance();
+    final library = LibraryStore(prefs, dir);
+    final file = DocFile(path: path, name: path.split('/').last, sizeBytes: File(path).lengthSync(), openedAt: DateTime.now());
+    await tester.pumpWidget(AppScope(
+      library: library,
+      settings: SettingsStore(prefs),
+      child: MaterialApp(theme: AppTheme.dark(), home: PdfReaderScreen(file: file)),
+    ));
+    Future<void> settle(bool Function() done) async {
+      for (var i = 0; i < 80 && !done(); i++) {
+        await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 100)));
+        await tester.pump(const Duration(milliseconds: 50));
+      }
+    }
+
+    await settle(() => find.textContaining('Page 1 of').evaluate().isNotEmpty);
+    return (library, file, settle);
+  }
+
+  testWidgets('PDF text can be highlighted and drawn on, then saved', (tester) async {
+    final dir = Directory.systemTemp.createTempSync('pdf_markup');
+    final path = '${dir.path}/Notes.pdf';
+    await tester.runAsync(() async {
+      final doc = pw.Document()
+        ..addPage(pw.Page(
+          pageFormat: PdfPageFormat.a4,
+          margin: const pw.EdgeInsets.all(50),
+          build: (_) => pw.Text('Highlight this line', style: const pw.TextStyle(fontSize: 40)),
+        ));
+      await File(path).writeAsBytes(await doc.save());
+    });
+    final (library, file, settle) = await openPdf(tester, dir, path);
+    await tester.tap(find.text('Annotate'));
+    await tester.pump();
+    expect(find.byKey(const ValueKey('tool-highlight')), findsOneWidget);
+    // Give the page text a moment to load.
+    await settle(() => false);
+
+    final page = tester.getRect(find.byKey(const ValueKey('markup-layer-1')));
+    Offset at(double fx, double fy) => Offset(page.left + fx * page.width, page.top + fy * page.height);
+    // The text sits 50pt from the top-left corner, 40pt high.
+    final lineY = (50 + 22) / PdfPageFormat.a4.height;
+    final drag = await tester.startGesture(at(0.1, lineY));
+    for (var i = 1; i <= 10; i++) {
+      await drag.moveTo(at(0.1 + i * 0.06, lineY));
+      await tester.pump();
+    }
+    await drag.up();
+    await tester.pump();
+
+    await tester.tap(find.byKey(const ValueKey('tool-pen')));
+    await tester.pump();
+    final pen = await tester.startGesture(at(0.2, 0.5));
+    for (var i = 1; i <= 10; i++) {
+      await pen.moveTo(at(0.2 + i * 0.05, 0.5 + (i.isEven ? 0.02 : -0.02)));
+      await tester.pump();
+    }
+    await pen.up();
+    await tester.pump();
+
+    await tester.tap(find.byKey(const Key('save-markup')));
+    await settle(() => find.textContaining('Annotations saved').evaluate().isNotEmpty);
+    expect(find.textContaining('Annotations saved'), findsOneWidget);
+    expect(find.byKey(const ValueKey('markup-layer-1')), findsNothing);
+
+    await tester.runAsync(() async {
+      final saved = await File(path).readAsBytes();
+      final text = String.fromCharCodes(saved);
+      expect(text, contains('/Subtype/Highlight'));
+      expect(text, contains('/Subtype/Ink'));
+      expect(await library.versionsOf(file), hasLength(1));
+      // The highlight covers the words, from the first letter on.
+      final quad = RegExp(r'/QuadPoints\s*\[([^\]]*)\]').firstMatch(text)!.group(1)!.trim().split(RegExp(r'\s+')).map(double.parse).toList();
+      final xs = [quad[0], quad[2], quad[4], quad[6]];
+      final ys = [quad[1], quad[3], quad[5], quad[7]];
+      expect(xs.reduce((a, b) => a < b ? a : b), closeTo(50, 6));
+      expect(xs.reduce((a, b) => a > b ? a : b), greaterThan(300));
+      final top = PdfPageFormat.a4.height - 50;
+      expect(ys.reduce((a, b) => a > b ? a : b), closeTo(top, 10));
+      expect(ys.reduce((a, b) => a < b ? a : b), closeTo(top - 40, 12));
+    });
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump(const Duration(seconds: 5));
+    dir.deleteSync(recursive: true);
+  }, skip: pdfium == null);
+
+  testWidgets('PDF forms can be filled in and saved', (tester) async {
+    final dir = Directory.systemTemp.createTempSync('pdf_form');
+    final path = '${dir.path}/Form.pdf';
+    File('test/fixtures/form.pdf').copySync(path);
+    late List<PdfFormField> fields;
+    await tester.runAsync(() async => fields = await readFormFields(await File(path).readAsBytes()));
+    PdfFormField field(String name, [int i = 0]) => fields.where((f) => f.name == name).elementAt(i);
+    Finder target(PdfFormField f) => find.byKey(ValueKey('field-${f.pageNumber}-${f.annotIndex}'));
+
+    final (library, file, settle) = await openPdf(tester, dir, path);
+    await tester.tap(find.text('Fill form'));
+    await settle(() => find.byKey(const Key('save-form')).evaluate().isNotEmpty);
+    await tester.pump(const Duration(milliseconds: 300));
+
+    await tester.tap(target(field('name')));
+    await tester.pump(const Duration(milliseconds: 400));
+    await tester.enterText(find.byKey(const Key('form-text')), 'Ada Lovelace');
+    await tester.tap(find.text('OK'));
+    await tester.pump(const Duration(milliseconds: 400));
+    expect(find.text('Ada Lovelace'), findsOneWidget);
+
+    await tester.tap(target(field('agree')));
+    await tester.tap(target(field('size', 2)));
+    await tester.tap(target(field('size', 1)));
+    await tester.pump();
+
+    // Locked fields say so instead of opening.
+    await tester.tap(target(field('locked')));
+    await tester.pump();
+    expect(find.textContaining('locked'), findsOneWidget);
+
+    await tester.tap(target(field('country')));
+    for (var i = 0; i < 10; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+    await tester.tap(find.text('Japan'));
+    for (var i = 0; i < 10; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+
+    expect(find.text('Japan'), findsOneWidget);
+    // Undo takes back the last choice only.
+    await tester.tap(find.byTooltip('Undo'));
+    await tester.pump();
+    expect(find.text('Japan'), findsNothing);
+    expect(find.text('Ada Lovelace'), findsOneWidget);
+    await tester.tap(target(field('country')));
+    for (var i = 0; i < 10; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+    await tester.tap(find.text('Germany'));
+    for (var i = 0; i < 10; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+
+    await tester.tap(find.byKey(const Key('save-form')));
+    await settle(() => find.textContaining('Form saved').evaluate().isNotEmpty);
+    expect(find.textContaining('Form saved'), findsOneWidget);
+
+    await tester.runAsync(() async {
+      final saved = await readFormFields(await File(path).readAsBytes());
+      PdfFormField get(String name, [int i = 0]) => saved.where((f) => f.name == name).elementAt(i);
+      expect(get('name').value, 'Ada Lovelace');
+      expect(get('agree').checked, isTrue);
+      expect([for (var i = 0; i < 3; i++) get('size', i).checked], [false, true, false]);
+      expect(get('country').value, 'Germany');
+      expect(get('locked').value, 'fixed');
+      expect(await library.versionsOf(file), hasLength(1));
     });
     await tester.pumpWidget(const SizedBox());
     await tester.pump(const Duration(seconds: 5));

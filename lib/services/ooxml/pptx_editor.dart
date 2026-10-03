@@ -522,8 +522,21 @@ class PptxEditor implements DocumentEditor {
     return _insertSlide(copy, rels, index);
   }
 
+  /// The "Title and Content" layout of [layoutPart]'s slide master, if any.
+  String? _contentLayout(String layoutPart) {
+    final master = _pkg.relationshipOfType(layoutPart, '/slideMaster');
+    if (master == null) return null;
+    for (final r in _pkg.relationshipElements(master).values) {
+      if (!(r.attr('Type') ?? '').endsWith('/slideLayout')) continue;
+      final part = _pkg.target(master, r);
+      if (_pkg.xml(part)?.rootElement.attr('type') == 'obj') return part;
+    }
+    return null;
+  }
+
   /// Adds a slide with the same layout as slide [after], with that layout's
-  /// empty placeholders, and returns its index.
+  /// empty placeholders, and returns its index. After a title slide, the
+  /// new slide uses the "Title and Content" layout instead.
   int addSlide(int after) {
     final reference = _slideParts.isEmpty ? null : _slideParts[after.clamp(0, _slideParts.length - 1)];
     String? layoutTarget;
@@ -538,6 +551,14 @@ class PptxEditor implements DocumentEditor {
     }
     if (layoutTarget == null || layoutPart == null) {
       throw const EditRefused('This presentation has no slide layout to base a new slide on.');
+    }
+    // After a title slide, the next slide is normally a title-and-content one.
+    if (_pkg.xml(layoutPart)?.rootElement.attr('type') == 'title') {
+      final content = _contentLayout(layoutPart);
+      if (content != null && reference!.startsWith('ppt/slides/') && content.startsWith('ppt/')) {
+        layoutPart = content;
+        layoutTarget = '../${content.substring(4)}';
+      }
     }
     _pkg.checkpoint();
     final layout = _pkg.xml(layoutPart);

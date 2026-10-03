@@ -24,7 +24,7 @@ void main() {
     await tester.pumpWidget(DocReaderApp(library: library, settings: settings));
     expect(find.text('Your docs'), findsOneWidget);
     expect(find.text('Your shelf is empty'), findsOneWidget);
-    for (final label in ['Scan', 'Import', 'Convert']) {
+    for (final label in ['Scan', 'New', 'Tools', 'Convert']) {
       expect(find.text(label), findsWidgets);
     }
   });

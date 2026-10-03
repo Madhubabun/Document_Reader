@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:doc_reader/models/conversion.dart';
@@ -57,6 +58,31 @@ void main() {
     expect(versions, hasLength(LibraryStore.keepVersions));
     expect(versions.first.readAsBytesSync(), List.filled(13, 13));
     expect(File('${a.path}.saving').existsSync(), isFalse);
+
+    // Locking a file drops the old, unlocked copies.
+    await store.saveEdited(store.byPath(a.path)!, [99], dropHistory: true);
+    expect(await store.versionsOf(a), isEmpty);
+    expect(File(a.path).readAsBytesSync(), [99]);
+
+    // Deleting a file deletes its versions too.
+    await store.saveEdited(store.byPath(a.path)!, [100]);
+    expect(await store.versionsOf(a), hasLength(1));
+    await store.remove(store.byPath(a.path)!);
+    expect(await store.versionsOf(a), isEmpty);
+  });
+
+  test('safe file names', () {
+    expect(safeBaseName(' My: report?.PDF ', fallback: 'x', extension: 'pdf'), 'My- report-');
+    expect(safeBaseName('...hidden', fallback: 'x'), 'hidden');
+    expect(safeBaseName('  ', fallback: 'Scan'), 'Scan');
+    expect(safeBaseName('a/b\\c', fallback: 'x'), 'a-b-c');
+    expect(safeBaseName('x' * 200, fallback: 'y'), hasLength(180));
+    // Names are cut by bytes, between characters.
+    final long = safeBaseName('漢' * 100, fallback: 'y');
+    expect(long, '漢' * 60);
+    final emoji = safeBaseName('a${'😀' * 60}', fallback: 'y');
+    expect(utf8.encode(emoji).length, lessThanOrEqualTo(180));
+    expect(emoji.runes.every((r) => r == 0x61 || r == 0x1F600), isTrue);
   });
 
   test('load drops entries whose file is gone', () async {

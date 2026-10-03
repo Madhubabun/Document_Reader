@@ -1,9 +1,12 @@
+import 'dart:math' as math;
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../services/ooxml/ooxml_editor.dart';
+import '../../services/ooxml/pptx_geometry.dart';
 import '../../services/ooxml/pptx_editor.dart';
 import '../../services/ooxml/pptx_reader.dart';
 import '../../theme/app_theme.dart';
@@ -139,6 +142,8 @@ class _SlidesViewState extends State<SlidesView> {
     final rects = SlideCanvas.rectsFor(_presentation, s);
     for (var i = s.shapes.length - 1; i >= 0; i--) {
       final r = rects[i];
+      // Master and layout graphics can't be edited here.
+      if (s.shapes[i].ref == null) continue;
       if (emu.dx >= r.x && emu.dx <= r.x + r.width && emu.dy >= r.y && emu.dy <= r.y + r.height) return s.shapes[i].ref;
     }
     return null;
@@ -528,15 +533,25 @@ class SlideCanvas extends StatelessWidget {
             children.add(Positioned.fromRect(rect: r, child: _hint(shape, scale)));
             continue;
           }
-          children.add(Positioned.fromRect(rect: r, child: _shape(shape, scale, r.width)));
+          Widget child = _shape(shape, scale, r.width);
+          if (shape.rotation != 0) child = Transform.rotate(angle: shape.rotation * math.pi / 180, child: child);
+          children.add(Positioned.fromRect(rect: r, child: child));
         }
-        final bgImage = slide.backgroundImage;
-        return Container(
-          decoration: BoxDecoration(
-            color: _hex(slide.background) ?? Colors.white,
-            image: bgImage == null ? null : DecorationImage(image: MemoryImage(bgImage), fit: BoxFit.fill),
+        final background = slide.backgroundFill ??
+            (slide.backgroundImage != null
+                ? PptxFill.picture(slide.backgroundImage!)
+                : slide.background != null
+                    ? PptxFill.solid(PptxColor(slide.background!))
+                    : null);
+        // White under see-through backgrounds, as in PowerPoint and the PDF export.
+        return ClipRect(
+          child: ColoredBox(
+            color: Colors.white,
+            child: Container(
+              decoration: ShapeFill.decoration(background, scale),
+              child: Stack(clipBehavior: Clip.hardEdge, children: children),
+            ),
           ),
-          child: Stack(clipBehavior: Clip.hardEdge, children: children),
         );
       }),
     );
@@ -559,65 +574,120 @@ class SlideCanvas extends StatelessWidget {
 
   Widget _shape(PptxShape shape, double scale, double width) {
     if (shape.kind == PptxShapeKind.picture && shape.imageBytes != null) {
-      return Image.memory(shape.imageBytes!, fit: BoxFit.fill, errorBuilder: (_, _, _) => const SizedBox.shrink());
+      final picture = ShapeFill(fill: shape.fillStyle ?? PptxFill.picture(shape.imageBytes!), line: shape.line, geometry: shape.geometry, scale: scale);
+      // A mirrored picture mirrors the image too, not just its outline.
+      return shape.flipH || shape.flipV ? Transform.flip(flipX: shape.flipH, flipY: shape.flipV, child: picture) : picture;
     }
     final defaultPt = switch (shape.kind) {
       PptxShapeKind.title => 40.0,
       PptxShapeKind.body => 24.0,
       _ => 18.0,
     };
+    final table = shape.table;
+    if (table != null) return _table(table, scale);
     final paragraphs = shape.paragraphs;
-    return Container(
-      color: _hex(shape.fill),
-      padding: EdgeInsets.all(91440 * scale), // 0.1in text inset
-      child: FittedBox(
-        fit: BoxFit.scaleDown,
-        alignment: switch (shape.anchor) {
-          'ctr' => Alignment.centerLeft,
-          'b' => Alignment.bottomLeft,
-          _ => Alignment.topLeft,
-        },
-        child: ConstrainedBox(
-          constraints: BoxConstraints(maxWidth: (width - 2 * 91440 * scale).clamp(20, double.infinity)),
-          child: Column(
-            // Stretch so centred and right-aligned paragraphs line up across the box.
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              for (final para in paragraphs)
-                Padding(
-                  padding: EdgeInsets.only(left: para.level * 28 * _emuPerPt * scale),
-                  child: Text.rich(
-                    TextSpan(children: [
-                      if (para.bullet && para.text.trim().isNotEmpty) const TextSpan(text: '•  '),
-                      for (final run in para.runs)
-                        TextSpan(
-                          text: run.text,
-                          style: TextStyle(
-                            fontSize: (run.fontSizePt ?? defaultPt) * _emuPerPt * scale,
-                            fontWeight: run.bold || shape.kind == PptxShapeKind.title ? FontWeight.w700 : FontWeight.w400,
-                            fontStyle: run.italic ? FontStyle.italic : null,
-                            color: _hex(run.color),
-                          ),
+    final body = ShapeFill(
+      fill: shape.fillStyle ?? (shape.fill == null ? null : PptxFill.solid(PptxColor(shape.fill!))),
+      line: shape.line,
+      geometry: shape.geometry,
+      flipH: shape.flipH,
+      flipV: shape.flipV,
+      scale: scale,
+    );
+    if (paragraphs.every((p) => p.text.trim().isEmpty)) return body;
+    return Stack(fit: StackFit.expand, children: [body, _text(shape, scale, width, defaultPt)]);
+  }
+
+  /// A table, each cell placed on the grid so merged cells can span.
+  Widget _table(PptxTable table, double scale) {
+    final xs = [0.0];
+    for (final w in table.columns) {
+      xs.add(xs.last + w * scale);
+    }
+    final ys = [0.0];
+    for (final r in table.rows) {
+      ys.add(ys.last + r.height * scale);
+    }
+    BorderSide side(PptxLine? l) => l == null ? BorderSide.none : BorderSide(color: ShapeFill.color(l.color), width: math.max(0.5, l.widthEmu * scale));
+    final cells = <Widget>[];
+    for (var r = 0; r < table.rows.length; r++) {
+      var col = 0;
+      for (final cell in table.rows[r].cells) {
+        final c = col;
+        col++;
+        if (cell.merged || c >= table.columns.length) continue;
+        final right = math.min(c + cell.columnSpan, table.columns.length);
+        final bottom = math.min(r + cell.rowSpan, table.rows.length);
+        final rect = Rect.fromLTRB(xs[c], ys[r], xs[right], ys[bottom]);
+        cells.add(Positioned.fromRect(
+          rect: rect,
+          child: DecoratedBox(
+            decoration: ShapeFill.decoration(cell.fill, scale, border: Border(left: side(cell.left), right: side(cell.right), top: side(cell.top), bottom: side(cell.bottom))) ??
+                const BoxDecoration(),
+            child: Padding(
+              padding: EdgeInsets.symmetric(horizontal: 91440 * scale, vertical: 45720 * scale),
+              child: _paragraphs(cell.paragraphs, PptxShapeKind.text, cell.anchor, scale, rect.width - 2 * 91440 * scale, 18),
+            ),
+          ),
+        ));
+      }
+    }
+    return Stack(clipBehavior: Clip.none, children: cells);
+  }
+
+  Widget _text(PptxShape shape, double scale, double width, double defaultPt) => Padding(
+        padding: EdgeInsets.all(91440 * scale), // 0.1in text inset
+        child: _paragraphs(shape.paragraphs, shape.kind, shape.anchor, scale, width - 2 * 91440 * scale, defaultPt),
+      );
+
+  Widget _paragraphs(List<PptxParagraph> paragraphs, PptxShapeKind kind, String anchor, double scale, double width, double defaultPt) {
+    return FittedBox(
+      fit: BoxFit.scaleDown,
+      alignment: switch (anchor) {
+        'ctr' => Alignment.centerLeft,
+        'b' => Alignment.bottomLeft,
+        _ => Alignment.topLeft,
+      },
+      child: ConstrainedBox(
+        constraints: BoxConstraints(maxWidth: width.clamp(20, double.infinity)),
+        child: Column(
+          // Stretch so centred and right-aligned paragraphs line up across the box.
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            for (final para in paragraphs)
+              Padding(
+                padding: EdgeInsets.only(left: para.level * 28 * _emuPerPt * scale),
+                child: Text.rich(
+                  TextSpan(children: [
+                    if (para.bullet && para.text.trim().isNotEmpty) const TextSpan(text: '•  '),
+                    for (final run in para.runs)
+                      TextSpan(
+                        text: run.text,
+                        style: TextStyle(
+                          fontSize: (run.fontSizePt ?? defaultPt) * _emuPerPt * scale,
+                          fontWeight: run.bold || kind == PptxShapeKind.title ? FontWeight.w700 : FontWeight.w400,
+                          fontStyle: run.italic ? FontStyle.italic : null,
+                          color: _hex(run.color),
                         ),
-                    ]),
-                    textAlign: switch (para.align) {
-                      'ctr' => TextAlign.center,
-                      'r' => TextAlign.right,
-                      'just' => TextAlign.justify,
-                      _ => TextAlign.left,
-                    },
-                    style: TextStyle(
-                      fontFamily: 'Calibri',
-                      fontFamilyFallback: officeFontFallback,
-                      fontSize: defaultPt * _emuPerPt * scale,
-                      height: 1.15,
-                      color: const Color(0xFF1F2937),
-                    ),
+                      ),
+                  ]),
+                  textAlign: switch (para.align) {
+                    'ctr' => TextAlign.center,
+                    'r' => TextAlign.right,
+                    'just' => TextAlign.justify,
+                    _ => TextAlign.left,
+                  },
+                  style: TextStyle(
+                    fontFamily: 'Calibri',
+                    fontFamilyFallback: officeFontFallback,
+                    fontSize: defaultPt * _emuPerPt * scale,
+                    height: 1.15,
+                    color: const Color(0xFF1F2937),
                   ),
                 ),
-            ],
-          ),
+              ),
+          ],
         ),
       ),
     );
@@ -628,6 +698,206 @@ class SlideCanvas extends StatelessWidget {
     final v = int.tryParse(hex, radix: 16);
     return v == null ? null : Color(0xFF000000 | v);
   }
+}
+
+/// Paints a slide shape's fill (colour, gradient or picture) and outline in
+/// its outline's shape. [scale] is pixels per EMU.
+class ShapeFill extends StatelessWidget {
+  const ShapeFill({super.key, required this.fill, required this.scale, this.line, this.geometry, this.flipH = false, this.flipV = false});
+
+  final PptxFill? fill;
+  final PptxLine? line;
+  final PptxGeometry? geometry;
+  final bool flipH;
+  final bool flipV;
+  final double scale;
+
+  static const _emuPerPixel = 9525;
+
+  static Color color(PptxColor c) => Color((((c.alpha * 255).round().clamp(0, 255)) << 24) | (int.tryParse(c.hex, radix: 16) ?? 0));
+
+  /// The fill as a box decoration, for rectangles and slide backgrounds.
+  static BoxDecoration? decoration(PptxFill? fill, double scale, {Border? border}) {
+    if (fill == null) return border == null ? null : BoxDecoration(border: border);
+    final image = fill.image;
+    return BoxDecoration(
+      color: fill.color == null ? null : color(fill.color!),
+      gradient: gradient(fill),
+      border: border,
+      image: image == null
+          ? null
+          : DecorationImage(
+              image: MemoryImage(image),
+              fit: fill.tile ? BoxFit.none : BoxFit.fill,
+              repeat: fill.tile ? ImageRepeat.repeat : ImageRepeat.noRepeat,
+              alignment: fill.tile ? Alignment.topLeft : Alignment.center,
+              // Tiles keep the picture's size (96 pixels to the inch).
+              scale: fill.tile ? 1 / (_emuPerPixel * scale).clamp(0.01, 100) : 1,
+              colorFilter: fill.colorMatrix == null ? null : ColorFilter.matrix(fill.colorMatrix!),
+              onError: (_, _) {},
+            ),
+    );
+  }
+
+  static Gradient? gradient(PptxFill fill) {
+    if (fill.stops.length < 2) return null;
+    final colors = [for (final s in fill.stops) color(s.color)];
+    final stops = [for (final s in fill.stops) s.position];
+    if (fill.radial) {
+      return RadialGradient(center: Alignment(fill.centerX * 2 - 1, fill.centerY * 2 - 1), radius: 0.75, colors: colors, stops: stops);
+    }
+    final a = fill.angle * math.pi / 180;
+    final dx = math.cos(a), dy = math.sin(a);
+    // Reach the corners along the gradient's direction.
+    final k = 1 / math.max(dx.abs(), dy.abs());
+    return LinearGradient(begin: Alignment(-dx * k, -dy * k), end: Alignment(dx * k, dy * k), colors: colors, stops: stops);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final g = geometry;
+    final stroke = line == null ? null : (color(line!.color), math.max(0.5, line!.widthEmu * scale));
+    if (g == null || (g.isRect && !g.isLine)) {
+      return DecoratedBox(
+        decoration: decoration(fill, scale, border: stroke == null ? null : Border.all(color: stroke.$1, width: stroke.$2)) ?? const BoxDecoration(),
+        child: const SizedBox.expand(),
+      );
+    }
+    final image = fill?.image;
+    return Stack(fit: StackFit.expand, clipBehavior: Clip.none, children: [
+      if (image != null && !g.isLine)
+        ClipPath(
+          clipper: _GeometryClipper(g, flipH, flipV),
+          child: DecoratedBox(decoration: decoration(fill, scale)!, child: const SizedBox.expand()),
+        ),
+      CustomPaint(painter: _GeometryPainter(g, image == null ? fill : null, stroke, flipH, flipV, arrows: (line?.arrowAtStart ?? false, line?.arrowAtEnd ?? false))),
+    ]);
+  }
+}
+
+Path _geometryPath(PptxGeometry g, Size size, bool flipH, bool flipV, {bool forFill = true}) {
+  final path = Path();
+  for (final gp in g.paths(size.width, size.height)) {
+    if (forFill ? !gp.fill : !gp.stroke) continue;
+    final sub = Path();
+    for (final op in gp.ops) {
+      switch (op) {
+        case MoveTo(:final x, :final y):
+          sub.moveTo(x, y);
+        case LineTo(:final x, :final y):
+          sub.lineTo(x, y);
+        case CubicTo(:final x1, :final y1, :final x2, :final y2, :final x, :final y):
+          sub.cubicTo(x1, y1, x2, y2, x, y);
+        case ClosePath():
+          sub.close();
+      }
+    }
+    path.addPath(sub, Offset.zero);
+  }
+  if (!flipH && !flipV) return path;
+  final m = Matrix4.identity()
+    ..translateByDouble(flipH ? size.width : 0, flipV ? size.height : 0, 0, 1)
+    ..scaleByDouble(flipH ? -1 : 1, flipV ? -1 : 1, 1, 1);
+  return path.transform(m.storage);
+}
+
+class _GeometryClipper extends CustomClipper<Path> {
+  _GeometryClipper(this.geometry, this.flipH, this.flipV);
+
+  final PptxGeometry geometry;
+  final bool flipH;
+  final bool flipV;
+
+  @override
+  Path getClip(Size size) => _geometryPath(geometry, size, flipH, flipV);
+
+  @override
+  bool shouldReclip(_GeometryClipper old) => old.geometry != geometry || old.flipH != flipH || old.flipV != flipV;
+}
+
+class _GeometryPainter extends CustomPainter {
+  _GeometryPainter(this.geometry, this.fill, this.stroke, this.flipH, this.flipV, {this.arrows = (false, false)});
+
+  final (bool, bool) arrows;
+
+  final PptxGeometry geometry;
+  final PptxFill? fill;
+  final (Color, double)? stroke;
+  final bool flipH;
+  final bool flipV;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final f = fill;
+    if (f != null && !geometry.isLine) {
+      final paint = Paint()..style = PaintingStyle.fill;
+      final gradient = ShapeFill.gradient(f);
+      if (gradient != null) {
+        paint.shader = gradient.createShader(Offset.zero & size);
+      } else if (f.color != null) {
+        paint.color = ShapeFill.color(f.color!);
+      } else {
+        paint.color = const Color(0x00000000);
+      }
+      canvas.drawPath(_geometryPath(geometry, size, flipH, flipV), paint);
+    }
+    final s = stroke;
+    if (s != null) {
+      canvas.drawPath(
+        _geometryPath(geometry, size, flipH, flipV, forFill: false),
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..color = s.$1
+          ..strokeWidth = s.$2,
+      );
+      if (geometry.isLine && (arrows.$1 || arrows.$2)) _arrowheads(canvas, size, s);
+    }
+  }
+
+  /// Triangles at the ends of a line, pointing along its first and last parts.
+  void _arrowheads(Canvas canvas, Size size, (Color, double) s) {
+    final points = <Offset>[];
+    for (final gp in geometry.paths(size.width, size.height)) {
+      for (final op in gp.ops) {
+        switch (op) {
+          case MoveTo(:final x, :final y) || LineTo(:final x, :final y):
+            points.add(Offset(x, y));
+          case CubicTo(:final x1, :final y1, :final x2, :final y2, :final x, :final y):
+            points
+              ..add(Offset(x1, y1))
+              ..add(Offset(x2, y2))
+              ..add(Offset(x, y));
+          case ClosePath():
+        }
+      }
+    }
+    Offset flip(Offset p) => Offset(flipH ? size.width - p.dx : p.dx, flipV ? size.height - p.dy : p.dy);
+    final pts = [for (final p in points) flip(p)];
+    if (pts.length < 2) return;
+    final paint = Paint()..color = s.$1;
+    final len = math.max(6.0, s.$2 * 3.5);
+    void head(Offset tip, Offset from) {
+      final d = tip - from;
+      if (d.distance == 0) return;
+      final u = d / d.distance;
+      final n = Offset(-u.dy, u.dx);
+      canvas.drawPath(
+        Path()
+          ..moveTo(tip.dx, tip.dy)
+          ..lineTo(tip.dx - u.dx * len + n.dx * len / 2, tip.dy - u.dy * len + n.dy * len / 2)
+          ..lineTo(tip.dx - u.dx * len - n.dx * len / 2, tip.dy - u.dy * len - n.dy * len / 2)
+          ..close(),
+        paint,
+      );
+    }
+
+    if (arrows.$1) head(pts.first, pts.firstWhere((p) => p != pts.first, orElse: () => pts.first));
+    if (arrows.$2) head(pts.last, pts.lastWhere((p) => p != pts.last, orElse: () => pts.last));
+  }
+
+  @override
+  bool shouldRepaint(_GeometryPainter old) =>
+      old.geometry != geometry || old.fill != fill || old.stroke != stroke || old.flipH != flipH || old.flipV != flipV || old.arrows != arrows;
 }
 
 /// Full-screen presenter: swipe between slides, tap to close.

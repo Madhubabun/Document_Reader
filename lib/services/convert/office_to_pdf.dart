@@ -1,3 +1,4 @@
+import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:pdf/pdf.dart';
@@ -6,6 +7,7 @@ import 'package:pdf/widgets.dart' as pw;
 import '../ooxml/docx_reader.dart';
 import '../ooxml/pptx_reader.dart';
 import '../ooxml/xlsx_reader.dart';
+import 'pptx_pdf_shapes.dart';
 
 /// Font files used when drawing Office content into a PDF. Carlito has the
 /// same metrics as Calibri, so line breaks match Word closely.
@@ -212,6 +214,7 @@ Future<Uint8List> pptxToPdf(PptxPresentation pres, OfficeFonts fonts) {
   final pageW = pres.slideWidth / emuPerPt;
   final pageH = pres.slideHeight / emuPerPt;
   final pdf = pw.Document(theme: fonts.theme());
+  final images = PptxPdfImages();
   for (final slide in pres.slides) {
     var autoTop = 0.08;
     final children = <pw.Widget>[];
@@ -225,84 +228,162 @@ Future<Uint8List> pptxToPdf(PptxPresentation pres, OfficeFonts fonts) {
       }
       final left = rect.x / emuPerPt;
       final top = rect.y / emuPerPt;
-      final width = rect.width / emuPerPt;
-      final height = rect.height / emuPerPt;
+      final width = math.max(0.0, rect.width / emuPerPt);
+      final height = math.max(0.0, rect.height / emuPerPt);
+      final defaultPt = switch (shape.kind) {
+        PptxShapeKind.title => 40.0,
+        PptxShapeKind.body => 24.0,
+        _ => 18.0,
+      };
+      final table = shape.table;
       pw.Widget child;
-      if (shape.kind == PptxShapeKind.picture && shape.imageBytes != null) {
-        child = pw.Image(pw.MemoryImage(shape.imageBytes!), fit: pw.BoxFit.fill, width: width, height: height);
+      if (table != null) {
+        child = _pptxTable(table, images);
       } else {
-        final defaultPt = switch (shape.kind) {
-          PptxShapeKind.title => 40.0,
-          PptxShapeKind.body => 24.0,
-          _ => 18.0,
-        };
-        child = pw.Container(
+        final fill = shape.kind == PptxShapeKind.picture && shape.imageBytes != null
+            ? shape.fillStyle ?? PptxFill.picture(shape.imageBytes!)
+            : shape.fillStyle ?? (shape.fill == null ? null : PptxFill.solid(PptxColor(shape.fill!)));
+        child = PptxPdfShape(
           width: width,
           height: height,
-          color: _hex(shape.fill),
-          padding: const pw.EdgeInsets.all(7.2),
-          child: pw.FittedBox(
-            fit: pw.BoxFit.scaleDown,
-            alignment: switch (shape.anchor) {
-              'ctr' => pw.Alignment.centerLeft,
-              'b' => pw.Alignment.bottomLeft,
-              _ => pw.Alignment.topLeft,
-            },
-            child: pw.SizedBox(
-              width: width - 14.4,
-              child: pw.Column(
-                crossAxisAlignment: pw.CrossAxisAlignment.stretch,
-                children: [
-                  for (final para in shape.paragraphs)
-                    pw.Padding(
-                      padding: pw.EdgeInsets.only(left: para.level * 28.0),
-                      child: pw.RichText(
-                        textAlign: switch (para.align) {
-                          'ctr' => pw.TextAlign.center,
-                          'r' => pw.TextAlign.right,
-                          'just' => pw.TextAlign.justify,
-                          _ => pw.TextAlign.left,
-                        },
-                        text: pw.TextSpan(
-                          style: pw.TextStyle(fontSize: defaultPt, color: const PdfColor.fromInt(0xFF1F2937)),
-                          children: [
-                            if (para.bullet && para.text.trim().isNotEmpty) const pw.TextSpan(text: '•  '),
-                            for (final run in para.runs)
-                              pw.TextSpan(
-                                text: run.text,
-                                style: pw.TextStyle(
-                                  fontSize: run.fontSizePt,
-                                  fontWeight: run.bold || shape.kind == PptxShapeKind.title ? pw.FontWeight.bold : null,
-                                  fontStyle: run.italic ? pw.FontStyle.italic : null,
-                                  color: _hex(run.color),
-                                ),
-                              ),
-                          ],
-                        ),
-                      ),
-                    ),
-                ],
-              ),
-            ),
-          ),
+          images: images,
+          fill: fill,
+          line: shape.line,
+          geometry: shape.geometry,
+          flipH: shape.flipH,
+          flipV: shape.flipV,
         );
+        if (shape.kind != PptxShapeKind.picture && shape.paragraphs.any((p) => p.text.trim().isNotEmpty)) {
+          child = pw.Stack(children: [
+            child,
+            _pptxText(shape.paragraphs, shape.kind, shape.anchor, width, height, defaultPt, const pw.EdgeInsets.all(7.2)),
+          ]);
+        }
       }
+      // PowerPoint turns shapes clockwise; PDF angles go the other way.
+      if (shape.rotation != 0) child = pw.Transform.rotate(angle: -shape.rotation * math.pi / 180, child: child);
       children.add(pw.Positioned(left: left, top: top, child: child));
     }
+    final background = slide.backgroundFill ??
+        (slide.backgroundImage != null
+            ? PptxFill.picture(slide.backgroundImage!)
+            : PptxFill.solid(PptxColor(slide.background ?? 'FFFFFF')));
     pdf.addPage(pw.Page(
       pageFormat: PdfPageFormat(pageW, pageH),
       margin: pw.EdgeInsets.zero,
-      build: (_) => pw.Container(
+      build: (_) => pw.SizedBox(
         width: pageW,
         height: pageH,
-        decoration: pw.BoxDecoration(
-          color: _hex(slide.background) ?? PdfColors.white,
-          image: slide.backgroundImage == null ? null : pw.DecorationImage(image: pw.MemoryImage(slide.backgroundImage!), fit: pw.BoxFit.fill),
-        ),
-        child: pw.Stack(overflow: pw.Overflow.clip, children: children),
+        child: pw.Stack(overflow: pw.Overflow.clip, children: [
+          // White under see-through or missing backgrounds, like PowerPoint.
+          PptxPdfShape(width: pageW, height: pageH, images: images, fill: const PptxFill.solid(PptxColor('FFFFFF'))),
+          PptxPdfShape(width: pageW, height: pageH, images: images, fill: background),
+          ...children,
+        ]),
       ),
     ));
   }
   if (pres.slides.isEmpty) pdf.addPage(pw.Page(pageFormat: PdfPageFormat(pageW, pageH), build: (_) => pw.SizedBox()));
   return pdf.save();
+}
+
+/// A table with each cell placed on the grid, so merged cells can span.
+pw.Widget _pptxTable(PptxTable table, PptxPdfImages images) {
+  const emuPerPt = 12700.0;
+  final xs = [0.0];
+  for (final w in table.columns) {
+    xs.add(xs.last + w / emuPerPt);
+  }
+  final ys = [0.0];
+  for (final r in table.rows) {
+    ys.add(ys.last + r.height / emuPerPt);
+  }
+  pw.BorderSide side(PptxLine? l) =>
+      l == null ? pw.BorderSide.none : pw.BorderSide(color: pdfColor(l.color), width: math.max(0.25, l.widthEmu / emuPerPt));
+  final cells = <pw.Widget>[];
+  for (var r = 0; r < table.rows.length; r++) {
+    var col = 0;
+    for (final cell in table.rows[r].cells) {
+      final c = col;
+      col++;
+      if (cell.merged || c >= table.columns.length) continue;
+      final right = math.min(c + cell.columnSpan, table.columns.length);
+      final bottom = math.min(r + cell.rowSpan, table.rows.length);
+      final w = xs[right] - xs[c];
+      final h = ys[bottom] - ys[r];
+      cells.add(pw.Positioned(
+        left: xs[c],
+        top: ys[r],
+        child: pw.Stack(children: [
+          PptxPdfShape(width: w, height: h, images: images, fill: cell.fill),
+          pw.Container(
+            width: w,
+            height: h,
+            decoration: pw.BoxDecoration(border: pw.Border(left: side(cell.left), right: side(cell.right), top: side(cell.top), bottom: side(cell.bottom))),
+          ),
+          _pptxText(cell.paragraphs, PptxShapeKind.text, cell.anchor, w, h, 18, const pw.EdgeInsets.symmetric(horizontal: 7.2, vertical: 3.6)),
+        ]),
+      ));
+    }
+  }
+  return pw.SizedBox(width: xs.last, height: ys.last, child: pw.Stack(overflow: pw.Overflow.visible, children: cells));
+}
+
+/// Slide text, shrunk if needed so it stays inside its box.
+pw.Widget _pptxText(List<PptxParagraph> paragraphs, PptxShapeKind kind, String anchor, double width, double height, double defaultPt,
+    pw.EdgeInsets padding) {
+  if (paragraphs.every((p) => p.text.trim().isEmpty)) return pw.SizedBox(width: width, height: height);
+  // Tiny boxes keep their text without the usual inset.
+  if (width - padding.horizontal < 2 || height - padding.vertical < 2) padding = pw.EdgeInsets.zero;
+  if (width < 2 || height < 2) return pw.SizedBox(width: width, height: height);
+  final inner = width - padding.horizontal;
+  return pw.Container(
+    width: width,
+    height: height,
+    padding: padding,
+    child: pw.FittedBox(
+      fit: pw.BoxFit.scaleDown,
+      alignment: switch (anchor) {
+        'ctr' => pw.Alignment.centerLeft,
+        'b' => pw.Alignment.bottomLeft,
+        _ => pw.Alignment.topLeft,
+      },
+      child: pw.SizedBox(
+        width: inner,
+        child: pw.Column(
+          crossAxisAlignment: pw.CrossAxisAlignment.stretch,
+          children: [
+            for (final para in paragraphs)
+              pw.Padding(
+                padding: pw.EdgeInsets.only(left: para.level * 28.0),
+                child: pw.RichText(
+                  textAlign: switch (para.align) {
+                    'ctr' => pw.TextAlign.center,
+                    'r' => pw.TextAlign.right,
+                    'just' => pw.TextAlign.justify,
+                    _ => pw.TextAlign.left,
+                  },
+                  text: pw.TextSpan(
+                    style: pw.TextStyle(fontSize: defaultPt, color: const PdfColor.fromInt(0xFF1F2937)),
+                    children: [
+                      if (para.bullet && para.text.trim().isNotEmpty) const pw.TextSpan(text: '•  '),
+                      for (final run in para.runs)
+                        pw.TextSpan(
+                          text: run.text,
+                          style: pw.TextStyle(
+                            fontSize: run.fontSizePt,
+                            fontWeight: run.bold || kind == PptxShapeKind.title ? pw.FontWeight.bold : null,
+                            fontStyle: run.italic ? pw.FontStyle.italic : null,
+                            color: _hex(run.color),
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
+    ),
+  );
 }

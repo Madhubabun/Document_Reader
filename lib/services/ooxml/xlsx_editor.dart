@@ -460,6 +460,10 @@ class XlsxEditor implements DocumentEditor {
   void setAlignment(int sheetIndex, Iterable<(int, int)> cells, String? horizontal) =>
       _restyle(sheetIndex, cells, (s) => _deriveStyle(s, align: horizontal ?? ''));
 
+  /// Applies one of Excel's built-in number formats (4 is `#,##0.00`).
+  void setNumberFormat(int sheetIndex, Iterable<(int, int)> cells, int numFmtId) =>
+      _restyle(sheetIndex, cells, (s) => _deriveStyle(s, numFmtId: numFmtId));
+
   void _restyle(int sheetIndex, Iterable<(int, int)> cells, int Function(int style) derive) {
     _checkpoint();
     final sheet = _sheets[sheetIndex];
